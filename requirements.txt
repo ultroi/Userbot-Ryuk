@@ -1,0 +1,17 @@
+python-telegram-bot[job-queue]==20.7
+Pillow
+img2pdf
+PyPDF2
+pdf2docx
+docx2pdf
+pytesseract
+python-docx
+
+# optional utilities
+python-dotenv
+
+# Userbot + AI integration dependencies
+pyrogram
+tgcrypto
+httpx
+python-dotenv
