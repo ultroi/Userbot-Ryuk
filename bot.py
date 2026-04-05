@@ -53,8 +53,12 @@ COMMANDS = [
     "run", "del", "purge", "help", "addsudo", "rmsudo", "listsudo", "logs", "redeploy"
 ]
 
+# Session file path helper
+SESSION_PATH = SESSION_NAME if SESSION_NAME.endswith(".session") else f"{SESSION_NAME}.session"
+USE_BOT_TOKEN = not os.path.exists(SESSION_PATH) and bool(BOT_TOKEN)
+
 # Initialize Pyrogram Client
-if BOT_TOKEN:
+if USE_BOT_TOKEN:
     app = Client(
         SESSION_NAME,
         api_id=API_ID,
@@ -873,13 +877,18 @@ def main() -> None:
     if not session_path.endswith(".session"):
         session_path = f"{session_path}.session"
 
-    if not BOT_TOKEN and not os.path.exists(session_path):
+    if not os.path.exists(session_path) and not BOT_TOKEN:
         logger.error(
             "No Telegram session file found at %s and BOT_TOKEN is not set. "
             "Provide a valid .session file or set BOT_TOKEN in the environment.",
             session_path,
         )
         return
+
+    if os.path.exists(session_path):
+        logger.info("🔑 Auth mode: user session")
+    else:
+        logger.info("🔑 Auth mode: bot token")
 
     logger.info("🚀 Userbot Starting...")
     logger.info(f"📱 Session: {SESSION_NAME}")
