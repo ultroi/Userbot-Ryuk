@@ -26,6 +26,11 @@ SESSION_NAME = os.getenv("SESSION_NAME", "userbot")
 COMMAND_PREFIX = "."
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
+COMMANDS = [
+    "ping", "id", "userlink", "ask", "afk",
+    "run", "del", "purge", "help"
+]
+
 # Initialize Pyrogram Client
 app = Client(
     SESSION_NAME,
@@ -236,15 +241,19 @@ async def afk_handler(client: Client, message: Message) -> None:
         logger.exception("AFK handler failed")
 
 
-@app.on_message(filters.me)
+@app.on_message(filters.me & ~filters.command("afk", prefixes=COMMAND_PREFIX))
 async def disable_afk_on_outgoing(client: Client, message: Message) -> None:
     try:
         if not afk_status["is_afk"]:
             return
-        if message.command and message.command[0].lower() == "afk":
-            return
+
         afk_status["is_afk"] = False
+        afk_status["reason"] = ""
+        afk_status["start_time"] = None
+        afk_status["replied_to"] = set()
         save_memory()
+        # Optional: Notify that AFK is off.
+        # await message.reply_text("**🟢 AFK Deactivated**")
     except Exception:
         logger.exception("Failed to disable AFK on outgoing message")
 
@@ -381,7 +390,7 @@ async def help_handler(client: Client, message: Message) -> None:
         logger.exception("Help handler failed")
 
 
-@app.on_message(filters.incoming & filters.text)
+@app.on_message(filters.mentioned & filters.incoming & filters.text & ~filters.command(list(COMMANDS), prefixes=COMMAND_PREFIX))
 async def afk_auto_reply(client: Client, message: Message) -> None:
     try:
         if not afk_status["is_afk"]:
