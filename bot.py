@@ -554,7 +554,8 @@ async def logs_handler(client: Client, message: Message) -> None:
         return
     try:
         latest_log = get_latest_log_line()
-        await message.reply_text(latest_log)
+        quoted_log = "> " + latest_log.replace("\n", "\n> ")
+        await message.reply_text(quoted_log)
     except Exception:
         logger.exception("Logs handler failed")
         await message.reply_text("❌ **Logs command failed.**")
