@@ -244,16 +244,21 @@ def split_message(text: str, max_length: int = 4096) -> list:
     return chunks if chunks else [text[:max_length]]
 
 
-def get_latest_log_line() -> str:
+def get_latest_log_lines(count: int = 1) -> str:
     if not os.path.exists(LOG_FILE):
         return "❌ **No logs found.**"
 
     try:
         with open(LOG_FILE, "r", encoding="utf-8") as f:
+            lines = []
             for line in reversed(f.readlines()):
                 if line.strip():
-                    return line.strip()
-        return "❌ **Log file is empty.**"
+                    lines.append(line.rstrip("\n"))
+                    if len(lines) >= count:
+                        break
+        if not lines:
+            return "❌ **Log file is empty.**"
+        return "\n".join(reversed(lines))
     except Exception:
         logger.exception("Failed to read latest log line")
         return "❌ **Could not read logs.**"
@@ -553,7 +558,17 @@ async def logs_handler(client: Client, message: Message) -> None:
         await message.reply_text("❌ **Only owner or sudo users can use this command.**")
         return
     try:
-        latest_log = get_latest_log_line()
+        count = 1
+        if len(message.command) > 1:
+            try:
+                count = int(message.command[1])
+                if count < 1 or count > 20:
+                    raise ValueError
+            except ValueError:
+                await message.reply_text("❌ **Usage:** `.logs [count]` where count is 1-20")
+                return
+
+        latest_log = get_latest_log_lines(count)
         quoted_log = "> " + latest_log.replace("\n", "\n> ")
         await message.reply_text(quoted_log)
     except Exception:
