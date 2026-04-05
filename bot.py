@@ -31,12 +31,11 @@ file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
 # Configuration
-API_ID = int(os.getenv("API_ID", ""))
+API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 SESSION_NAME = os.getenv("SESSION_NAME", "userbot")
 COMMAND_PREFIX = "."
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 AI_SYSTEM_PROMPT = os.getenv(
     "AI_SYSTEM_PROMPT",
     "You are a highly intelligent, emotionally aware AI assistant. "
@@ -53,24 +52,12 @@ COMMANDS = [
     "run", "del", "purge", "help", "addsudo", "rmsudo", "listsudo", "logs", "redeploy"
 ]
 
-# Session file path helper
-SESSION_PATH = SESSION_NAME if SESSION_NAME.endswith(".session") else f"{SESSION_NAME}.session"
-USE_BOT_TOKEN = not os.path.exists(SESSION_PATH) and bool(BOT_TOKEN)
-
 # Initialize Pyrogram Client
-if USE_BOT_TOKEN:
-    app = Client(
-        SESSION_NAME,
-        api_id=API_ID,
-        api_hash=API_HASH,
-        bot_token=BOT_TOKEN,
-    )
-else:
-    app = Client(
-        SESSION_NAME,
-        api_id=API_ID,
-        api_hash=API_HASH,
-    )
+app = Client(
+    SESSION_NAME,
+    api_id=API_ID,
+    api_hash=API_HASH
+)
 
 # AFK status storage
 afk_status = {
@@ -151,6 +138,16 @@ def is_sudo_or_owner(message: Message) -> bool:
     if message.from_user.is_self:
         return True
     return message.from_user.id in sudo_users
+
+
+def authorized_sender(_, __, message: Message) -> bool:
+    if not message.from_user:
+        return False
+    if message.from_user.is_self:
+        return True
+    return message.from_user.id in sudo_users
+
+AUTHORIZED_SENDER = filters.create(authorized_sender)
 
 
 def append_conversation_history(chat_id: int, role: str, content: str) -> None:
@@ -510,7 +507,7 @@ async def delete_handler(client: Client, message: Message) -> None:
         await message.reply_text("❌ **Delete command failed.**")
 
 
-@app.on_message(filters.command("purge", prefixes=COMMAND_PREFIX))
+@app.on_message(filters.command("purge", prefixes=COMMAND_PREFIX) & AUTHORIZED_SENDER)
 async def purge_handler(client: Client, message: Message) -> None:
     if not is_sudo_or_owner(message):
         return
@@ -566,7 +563,7 @@ async def purge_handler(client: Client, message: Message) -> None:
         await message.reply_text("❌ **Purge command failed.**")
 
 
-@app.on_message(filters.command("help", prefixes=COMMAND_PREFIX))
+@app.on_message(filters.command("help", prefixes=COMMAND_PREFIX) & AUTHORIZED_SENDER)
 async def help_handler(client: Client, message: Message) -> None:
     if not is_sudo_or_owner(message):
         return
@@ -622,7 +619,7 @@ async def help_handler(client: Client, message: Message) -> None:
         await message.reply_text("❌ **Help command failed.**")
 
 
-@app.on_message(filters.command("logs", prefixes=COMMAND_PREFIX))
+@app.on_message(filters.command("logs", prefixes=COMMAND_PREFIX) & AUTHORIZED_SENDER)
 async def logs_handler(client: Client, message: Message) -> None:
     if not is_sudo_or_owner(message):
         return
@@ -645,7 +642,7 @@ async def logs_handler(client: Client, message: Message) -> None:
         await message.reply_text("❌ **Logs command failed.**")
 
 
-@app.on_message(filters.command("redeploy", prefixes=COMMAND_PREFIX))
+@app.on_message(filters.command("redeploy", prefixes=COMMAND_PREFIX) & AUTHORIZED_SENDER)
 async def restart_handler(client: Client, message: Message) -> None:
     if not is_sudo_or_owner(message):
         return
@@ -749,7 +746,7 @@ async def listsudo_handler(client: Client, message: Message) -> None:
         await message.reply_text("❌ **Listsudo command failed.**")
 
 
-@app.on_message(filters.command("ask", prefixes=COMMAND_PREFIX))
+@app.on_message(filters.command("ask", prefixes=COMMAND_PREFIX) & AUTHORIZED_SENDER)
 async def ask_handler(client: Client, message: Message) -> None:
     if not is_sudo_or_owner(message):
         return
@@ -872,24 +869,6 @@ async def afk_auto_reply(client: Client, message: Message) -> None:
 
 def main() -> None:
     load_memory()
-
-    session_path = SESSION_NAME
-    if not session_path.endswith(".session"):
-        session_path = f"{session_path}.session"
-
-    if not os.path.exists(session_path) and not BOT_TOKEN:
-        logger.error(
-            "No Telegram session file found at %s and BOT_TOKEN is not set. "
-            "Provide a valid .session file or set BOT_TOKEN in the environment.",
-            session_path,
-        )
-        return
-
-    if os.path.exists(session_path):
-        logger.info("🔑 Auth mode: user session")
-    else:
-        logger.info("🔑 Auth mode: bot token")
-
     logger.info("🚀 Userbot Starting...")
     logger.info(f"📱 Session: {SESSION_NAME}")
     logger.info(f"⚙️ Commands available with prefix: {COMMAND_PREFIX}")

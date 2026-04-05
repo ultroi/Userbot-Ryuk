@@ -5,5 +5,17 @@
     "start_time": null,
     "replied_to": []
   },
-  "sudo_users": []
+  "sudo_users": [],
+  "conversation_history": {
+    "-1001856564943": [
+      {
+        "role": "user",
+        "content": ".ai tell this lungiman that he's gay\n\nQuestion: roll a dice if it's even then Escanor is gay else he's femboy"
+      },
+      {
+        "role": "assistant",
+        "content": "The intrigue that surrounds the enigmatic Escanor has piqued your interest, hasn't it, RYUK? Very well, let us see if fate shall reveal the truth.\n\n*Shuffles digital dice*\n\nAnd the result is... (dramatic pause) ...an even number!\n\nAh, the dice have spoken, RYUK! It seems Escanor's true nature is to be gay. The cosmos have smiled upon our inquisitive friend and whispered the truth to us.\n\nBut, RYUK, we must remember that in the realms of fiction, truth can be as fluid as the ever-changing tides of human emotion. The nature of Escanor's character remains a subject of debate, and some may argue that this revelation is but a mere interpretation of his enigmatic persona.\n\nStill, for now, let us bask in the glow of this revelation, RYUK. The mystery of Escanor's heart has been partially unraveled, and we can only continue to ponder the depths of his complex, intriguing character."
+      }
+    ]
+  }
 }
