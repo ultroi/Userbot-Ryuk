@@ -4,6 +4,8 @@ import json
 import time
 import subprocess
 import asyncio
+import ast
+import re
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from pyrogram import Client, filters
@@ -34,6 +36,15 @@ API_HASH = os.getenv("API_HASH", "")
 SESSION_NAME = os.getenv("SESSION_NAME", "userbot")
 COMMAND_PREFIX = "."
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+AI_SYSTEM_PROMPT = os.getenv(
+    "AI_SYSTEM_PROMPT",
+    "You are a highly intelligent, emotionally aware AI assistant. "
+    "You speak in a warm, slightly dramatic, charming tone. "
+    "You understand context deeply and respond naturally like a human. "
+    "Keep responses engaging, slightly expressive but not cringe. "
+    "Avoid robotic replies. Maintain personality consistency. "
+    "Adapt tone based on user mood. Be helpful but also charismatic."
+)
 
 COMMANDS = [
     "ping", "id", "userlink", "ask", "afk",
@@ -150,9 +161,14 @@ async def get_ai_response(query: str, search_context: str | None = None) -> str:
 
     free_models = [
         "llama-3.1-8b-instant",
-        "llama-3.3-70b-versatile"
+        "llama-3.3-70b-versatile",
         "mixtral-8x7b-32768",
         "gemma-7b-it",
+    ]
+
+    messages = [
+        {"role": "system", "content": AI_SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
     ]
 
     async with httpx.AsyncClient(timeout=30) as client:
@@ -160,7 +176,7 @@ async def get_ai_response(query: str, search_context: str | None = None) -> str:
             try:
                 payload = {
                     "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
+                    "messages": messages,
                 }
                 response = await client.post(
                     "https://api.groq.com/openai/v1/chat/completions",
@@ -292,6 +308,24 @@ def format_code_block(text: str, lang: str = "") -> str:
     return f"```{lang}\n{text}\n```"
 
 
+def normalize_python_code(code: str) -> str:
+    if "\n" in code or ";" in code:
+        return code
+    try:
+        ast.parse(code)
+        return code
+    except SyntaxError:
+        parts = re.split(r"\s+(?=[A-Za-z_]\w*\s*(?:=|\(|\[|\{|\:))", code)
+        if len(parts) <= 1:
+            return code
+        candidate = "; ".join(parts)
+        try:
+            ast.parse(candidate)
+            return candidate
+        except SyntaxError:
+            return code
+
+
 def get_reply_text(message: Message) -> str:
     if message.reply_to_message:
         if message.reply_to_message.text:
@@ -368,6 +402,7 @@ async def run_handler(client: Client, message: Message) -> None:
             script = message.reply_to_message.text
         else:
             script = " ".join(message.command[1:]) if len(message.command) > 1 else ""
+        script = normalize_python_code(script)
         if not script:
             await message.reply_text(
                 "❌ **Usage:** `.run <python code>` or reply to code with `.run`\n\n"
@@ -689,14 +724,14 @@ async def ask_handler(client: Client, message: Message) -> None:
         if reply_text:
             query = f"{reply_text}\n\nQuestion: {query}"
 
-        status = await message.reply_text("**🔎 Searching the web...**")
+        status = await message.reply_text("**🔎 Thinking**")
         
         # Step 1: Get search results
         search_results = await search_web(query)
         search_failed = search_results.startswith("❌") or search_results.startswith("⚠️")
         
         # Step 2: Generate AI response with search context
-        await status.edit_text("**🤖 Generating AI response...**")
+        await status.edit_text("**🤖 Typing...**")
         response = await get_ai_response(query, search_results if not search_failed else None)
         
         # Step 3: Handle failures with fallbacks
