@@ -1,0 +1,9 @@
+{
+  "afk": {
+    "is_afk": false,
+    "reason": "",
+    "start_time": null,
+    "replied_to": []
+  },
+  "sudo_users": []
+}

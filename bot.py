@@ -2,7 +2,8 @@ import os
 import json
 import time
 import subprocess
-from datetime import datetime
+import asyncio
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from pyrogram import Client, filters
 from pyrogram.types import Message
@@ -28,7 +29,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 COMMANDS = [
     "ping", "id", "userlink", "ask", "afk",
-    "run", "del", "purge", "help"
+    "run", "del", "purge", "help", "addsudo", "rmsudo", "listsudo"
 ]
 
 # Initialize Pyrogram Client
@@ -43,8 +44,16 @@ afk_status = {
     "is_afk": False,
     "reason": "",
     "start_time": None,
-    "replied_to": set()
+    "replied_to": set(),
+    "last_cleanup": datetime.now()
 }
+
+# Sudo users storage
+sudo_users = set()
+
+# Constants
+MAX_AFK_REPLIED_TO = 1000  # Prevent unbounded growth
+AFK_CLEANUP_INTERVAL = 3600  # 1 hour in seconds
 
 
 # Memory helpers
@@ -56,7 +65,8 @@ def save_memory() -> None:
                 "reason": afk_status["reason"],
                 "start_time": afk_status["start_time"],
                 "replied_to": list(afk_status["replied_to"]),
-            }
+            },
+            "sudo_users": list(sudo_users)
         }
         with open("memory.json", "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -78,11 +88,43 @@ def load_memory() -> None:
             afk_status["reason"] = loaded.get("reason", "")
             afk_status["start_time"] = loaded.get("start_time", None)
             afk_status["replied_to"] = set(loaded.get("replied_to", []))
+            
+            # Load sudo users
+            global sudo_users
+            sudo_users = set(data.get("sudo_users", []))
     except Exception:
         logger.exception("Failed to load memory")
 
 
-async def get_ai_response(query: str) -> str:
+def is_sudo_or_owner(message: Message) -> bool:
+    if not message.from_user:
+        return False
+    if message.from_user.is_self:
+        return True
+    return message.from_user.id in sudo_users
+
+
+def cleanup_afk_memory() -> None:
+    """Cleanup AFK memory to prevent unbounded growth."""
+    now = datetime.now()
+    
+    # Check if cleanup interval has passed
+    if (now - afk_status["last_cleanup"]).total_seconds() < AFK_CLEANUP_INTERVAL:
+        return
+    
+    # Limit replied_to set size
+    if len(afk_status["replied_to"]) > MAX_AFK_REPLIED_TO:
+        # Convert to list, remove oldest half, and convert back to set
+        replied_list = list(afk_status["replied_to"])
+        afk_status["replied_to"] = set(replied_list[len(replied_list)//2:])
+        save_memory()
+        logger.info("Cleaned up AFK replied_to set (new size: %d)", len(afk_status["replied_to"]))
+    
+    afk_status["last_cleanup"] = now
+
+
+async def get_ai_response(query: str, search_context: str | None = None) -> str:
+    """Use Groq free tier models for generating answers."""
     if not GROQ_API_KEY:
         return "⚠️ **AI Key not configured!**"
 
@@ -91,56 +133,131 @@ async def get_ai_response(query: str) -> str:
         "Content-Type": "application/json",
     }
 
-    model_order = [
-        "llama-3.3-70b-versatile",
-        "grok-1-mini",
-        "grok-1-small",
-        "grok-1",
-        "grok-2-mini",
-        "grok-2",
+    prompt = query
+    if search_context:
+        prompt = (
+            "Answer based on this search data. Be concise and accurate.\n\n"
+            f"Data:\n{search_context}\n\nQuestion: {query}"
+        )
+
+    free_models = [
+        "llama-3.1-8b-instant",
+        "llama-3.3-70b-versatile"
+        "mixtral-8x7b-32768",
+        "gemma-7b-it",
     ]
 
     async with httpx.AsyncClient(timeout=30) as client:
-        for model in model_order:
+        for model in free_models:
             try:
                 payload = {
                     "model": model,
-                    "messages": [{"role": "user", "content": query}],
+                    "messages": [{"role": "user", "content": prompt}],
                 }
                 response = await client.post(
                     "https://api.groq.com/openai/v1/chat/completions",
                     json=payload,
                     headers=headers,
                 )
-                if response.status_code != 200:
-                    error_text = response.text.lower()
-                    if "model_terms_required" in error_text or "terms acceptance" in error_text:
-                        logger.warning("Skipping model %s due to terms acceptance requirement", model)
-                        continue
-                    if "does not support chat completions" in error_text or "unsupported chat" in error_text:
-                        logger.warning("Skipping model %s because it does not support chat completions", model)
-                        continue
-                    logger.error(
-                        "AI request failed for model %s: %s %s %s",
-                        model,
-                        response.status_code,
-                        response.url,
-                        response.text,
-                    )
-                    continue
-
-                result = response.json()
-                if "choices" in result and len(result["choices"]) > 0:
-                    choice = result["choices"][0]
-                    if "message" in choice and "content" in choice["message"]:
-                        return choice["message"]["content"]
-                    if "text" in choice:
-                        return choice["text"]
-                logger.error("AI response missing expected fields for model %s: %s", model, result)
+                if response.status_code == 200:
+                    result = response.json()
+                    if "choices" in result and len(result["choices"]) > 0:
+                        choice = result["choices"][0]
+                        if "message" in choice and "content" in choice["message"]:
+                            return choice["message"]["content"]
+                logger.warning("Model %s failed: %s", model, response.status_code)
             except Exception:
-                logger.exception("AI request failed for model %s", model)
+                logger.exception("Request failed for model %s", model)
 
     return "❌ **AI request failed.**"
+
+
+async def search_web(query: str) -> str:
+    """Use DuckDuckGo free API for search (no authentication required)."""
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            params = {
+                "q": query,
+                "format": "json",
+                "no_html": "1",
+                "skip_disambig": "1",
+            }
+            response = await client.get("https://api.duckduckgo.com/", params=params)
+            if response.status_code not in {200, 202}:
+                logger.error("Search request failed: %s", response.status_code)
+                return "❌ **Search failed.**"
+
+            data = response.json()
+            if data.get("AbstractText"):
+                return data["AbstractText"]
+
+            if data.get("Answer"):
+                return data["Answer"]
+
+            related = data.get("RelatedTopics", [])
+            results = []
+            for item in related:
+                if isinstance(item, dict) and item.get("Text"):
+                    results.append(item["Text"])
+                if len(results) >= 3:
+                    break
+
+            if results:
+                return "\n".join(results[:3])
+
+            return "❌ **No search results found.**"
+    except Exception:
+        logger.exception("Search request failed")
+        return "❌ **Search failed.**"
+
+
+def split_message(text: str, max_length: int = 4096) -> list:
+    """Split text into chunks for Telegram's message limit."""
+    if len(text) <= max_length:
+        return [text]
+    
+    chunks = []
+    current_chunk = ""
+    
+    for line in text.split('\n'):
+        if len(current_chunk) + len(line) + 1 > max_length:
+            if current_chunk:
+                chunks.append(current_chunk)
+            current_chunk = line
+        else:
+            if current_chunk:
+                current_chunk += '\n' + line
+            else:
+                current_chunk = line
+    
+    if current_chunk:
+        chunks.append(current_chunk)
+    
+    return chunks if chunks else [text[:max_length]]
+
+
+async def run_python_async(code: str, timeout: int = 10) -> tuple:
+    """Run Python code asynchronously without blocking the event loop."""
+    try:
+        # Use asyncio to prevent blocking
+        loop = asyncio.get_event_loop()
+        result = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    ["python", "-c", code],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout
+                )
+            ),
+            timeout=timeout + 1
+        )
+        return (result.stdout.strip(), result.stderr.strip())
+    except asyncio.TimeoutError:
+        return ("", "Execution Timeout")
+    except Exception as e:
+        return ("", str(e))
 
 
 def format_code_block(text: str, lang: str = "") -> str:
@@ -156,8 +273,11 @@ def get_reply_text(message: Message) -> str:
     return ""
 
 
-@app.on_message(filters.command("ping", prefixes=COMMAND_PREFIX) & filters.me)
+@app.on_message(filters.command("ping", prefixes=COMMAND_PREFIX))
 async def ping_handler(client: Client, message: Message) -> None:
+    if not is_sudo_or_owner(message):
+        await message.reply_text("❌ **Only owner or sudo users can use this command.**")
+        return
     try:
         start_time = time.time()
         status = await message.reply_text("**🏓 Pinging...**")
@@ -167,8 +287,11 @@ async def ping_handler(client: Client, message: Message) -> None:
         logger.exception("Ping handler failed")
 
 
-@app.on_message(filters.command("id", prefixes=COMMAND_PREFIX) & filters.me)
+@app.on_message(filters.command("id", prefixes=COMMAND_PREFIX))
 async def id_handler(client: Client, message: Message) -> None:
+    if not is_sudo_or_owner(message):
+        await message.reply_text("❌ **Only owner or sudo users can use this command.**")
+        return
     try:
         if message.reply_to_message and message.reply_to_message.from_user:
             target_user = message.reply_to_message.from_user
@@ -188,10 +311,14 @@ async def id_handler(client: Client, message: Message) -> None:
         await message.reply_text(response)
     except Exception:
         logger.exception("ID handler failed")
+        await message.reply_text("❌ **ID command failed.**")
 
 
-@app.on_message(filters.command("userlink", prefixes=COMMAND_PREFIX) & filters.me)
+@app.on_message(filters.command("userlink", prefixes=COMMAND_PREFIX))
 async def userlink_handler(client: Client, message: Message) -> None:
+    if not is_sudo_or_owner(message):
+        await message.reply_text("❌ **Only owner or sudo users can use this command.**")
+        return
     try:
         if message.reply_to_message and message.reply_to_message.from_user:
             user = message.reply_to_message.from_user
@@ -204,33 +331,345 @@ async def userlink_handler(client: Client, message: Message) -> None:
         await message.reply_text(response)
     except Exception:
         logger.exception("Userlink handler failed")
+        await message.reply_text("❌ **Userlink command failed.**")
 
 
-@app.on_message(filters.command("ask", prefixes=COMMAND_PREFIX) & filters.me)
-async def ask_handler(client: Client, message: Message) -> None:
+@app.on_message(filters.command("run", prefixes=COMMAND_PREFIX))
+async def run_handler(client: Client, message: Message) -> None:
+    if not is_sudo_or_owner(message):
+        await message.reply_text("❌ **Only owner or sudo users can use this command.**")
+        return
     try:
-        query = " ".join(message.command[1:]) if message.command else ""
+        if message.reply_to_message and message.reply_to_message.text:
+            script = message.reply_to_message.text
+        else:
+            script = " ".join(message.command[1:]) if len(message.command) > 1 else ""
+        if not script:
+            await message.reply_text(
+                "❌ **Usage:** `.run <python code>` or reply to code with `.run`\n\n"
+                "**Example:** `.run print(2+2)`"
+            )
+            return
+        
+        # Safety warning
+        warning_msg = await message.reply_text(
+            "⚠️ **SECURITY WARNING**\n"
+            "You are about to execute Python code. This can be dangerous!\n"
+            "Make sure you trust the code source.\n\n"
+            "**Executing...**"
+        )
+        
+        stdout, stderr = await run_python_async(script)
+        output = stdout if stdout else stderr
+        output = output[:1000] if output else "No output"
+        
+        await warning_msg.edit_text(format_code_block(output, "python"))
+    except Exception:
+        logger.exception("Run handler failed")
+        await message.reply_text("❌ **Run command failed.**")
+
+
+@app.on_message(filters.command("del", prefixes=COMMAND_PREFIX))
+async def delete_handler(client: Client, message: Message) -> None:
+    if not is_sudo_or_owner(message):
+        await message.reply_text("❌ **Only owner or sudo users can use this command.**")
+        return
+    try:
+        if not message.reply_to_message:
+            await message.reply_text("❌ **Usage:** reply to a message with `.del` to delete it")
+            return
+
+        # Send confirmation FIRST before deleting
+        try:
+            status = await message.reply_text("⏳ **Deleting...**")
+        except Exception:
+            logger.exception("Failed to send status")
+            status = None
+
+        deleted_count = 0
+        try:
+            await message.reply_to_message.delete()
+            deleted_count += 1
+        except Exception:
+            logger.exception("Failed to delete replied message")
+
+        try:
+            await message.delete()
+            deleted_count += 1
+        except Exception:
+            logger.exception("Failed to delete command message")
+        
+        # Update status if it exists
+        if status and deleted_count > 0:
+            try:
+                await status.edit_text(f"✅ **Deleted {deleted_count} message(s)**")
+            except Exception:
+                logger.exception("Failed to edit status")
+    except Exception:
+        logger.exception("Delete handler failed")
+        await message.reply_text("❌ **Delete command failed.**")
+
+
+@app.on_message(filters.command("purge", prefixes=COMMAND_PREFIX))
+async def purge_handler(client: Client, message: Message) -> None:
+    if not is_sudo_or_owner(message):
+        await message.reply_text("❌ **Only owner or sudo users can use this command.**")
+        return
+    try:
+        if message.command and len(message.command) > 1:
+            try:
+                count = int(message.command[1])
+                if count <= 0:
+                    raise ValueError
+            except ValueError:
+                await message.reply_text("❌ **Usage:** `.purge <count>` where count is a positive number")
+                return
+
+            # Send status FIRST before deleting
+            status = await message.reply_text(f"⏳ **Purging {count} messages...**")
+            
+            chat_id = message.chat.id
+            ids_to_delete = []
+            for offset in range(count + 1):
+                msg_id = message.id - offset
+                ids_to_delete.append(msg_id)
+            
+            # Batch delete (more efficient)
+            try:
+                await client.delete_messages(chat_id, ids_to_delete)
+                await status.edit_text(f"✅ **Purged {count} messages**")
+            except Exception:
+                logger.exception("Failed to purge messages %s", ids_to_delete)
+                await status.edit_text("❌ **Failed to purge messages.**")
+            return
+
+        if not message.reply_to_message:
+            await message.reply_text("❌ **Usage:** `.purge <count>` or reply to a message with `.purge` to delete range")
+            return
+
+        start_id = message.reply_to_message.id
+        end_id = message.id
+        if start_id > end_id:
+            start_id, end_id = end_id, start_id
+
+        # Send status FIRST before deleting
+        ids_to_delete = list(range(start_id, end_id + 1))
+        status = await message.reply_text(f"⏳ **Purging {len(ids_to_delete)} messages...**")
+        
+        try:
+            await client.delete_messages(message.chat.id, ids_to_delete)
+            await status.edit_text(f"✅ **Purged {len(ids_to_delete)} messages**")
+        except Exception:
+            logger.exception("Failed to purge messages %s", ids_to_delete)
+            await status.edit_text("❌ **Failed to purge messages.**")
+    except Exception:
+        logger.exception("Purge handler failed")
+        await message.reply_text("❌ **Purge command failed.**")
+
+
+@app.on_message(filters.command("help", prefixes=COMMAND_PREFIX))
+async def help_handler(client: Client, message: Message) -> None:
+    if not is_sudo_or_owner(message):
+        await message.reply_text("❌ **Only owner or sudo users can use this command.**")
+        return
+    try:
+        help_text = """**📚 Userbot Commands Help**
+
+**General:**
+• `.ping` - Check bot responsiveness ⏱️
+• `.id` - Get user/chat/message IDs 🆔
+• `.userlink` - Get user link 👤
+• `.help` - Show this help message 📖
+
+**AI Features:**
+• `.ask <question>` - Ask AI anything 🤖
+• `.ask` (reply) - Ask AI about replied message 💬
+• `.ask` will fallback to web search when AI cannot provide an exact answer
+
+**Utilities:**
+• `.run <code>` - Execute Python script ⚙️
+• `.run` (reply) - Execute replied code
+• `.del` (reply) - Delete replied message and this command
+• `.purge <count>` - Delete recent messages in chat
+• `.purge` (reply) - Delete all messages from replied message to this command
+
+**Note:** Sudo users can use these commands, but `.addsudo`, `.rmsudo`, and `.listsudo` remain owner-only.
+
+**Sudo Management:**
+• `.addsudo <user_id>` - Add user to sudo list 🔑
+• `.addsudo` (reply) - Add replied user to sudo list
+• `.rmsudo <user_id>` - Remove user from sudo list ❌
+• `.rmsudo` (reply) - Remove replied user from sudo list
+• `.listsudo` - List all sudo users 📋
+
+**AFK System:**
+• `.afk [reason]` - Set AFK status 🔴
+• AFK disables automatically when you send your next message ✅
+
+**Example Usage:**
+```
+.ping
+.id
+.ask What is machine learning?
+.run print('Hello World')
+.afk Taking a break
+.addsudo 123456789
+.listsudo
+```
+
+❓ **Need help?** Reply to any command with questions!"""
+        await message.reply_text(help_text)
+    except Exception:
+        logger.exception("Help handler failed")
+        await message.reply_text("❌ **Help command failed.**")
+
+
+@app.on_message(filters.command("addsudo", prefixes=COMMAND_PREFIX) & filters.me)
+async def addsudo_handler(client: Client, message: Message) -> None:
+    try:
+        if message.reply_to_message and message.reply_to_message.from_user:
+            target_user = message.reply_to_message.from_user
+            user_id = target_user.id
+            username = target_user.first_name or f"User({user_id})"
+        else:
+            # Get user ID from command args
+            if len(message.command) < 2:
+                await message.reply_text(
+                    "❌ **Usage:** `.addsudo <user_id>` or reply to a user with `.addsudo`"
+                )
+                return
+            try:
+                user_id = int(message.command[1])
+                username = f"User({user_id})"
+            except ValueError:
+                await message.reply_text("❌ **Invalid user ID**")
+                return
+        
+        if user_id in sudo_users:
+            await message.reply_text(f"⚠️ **User {username} is already a sudo user**")
+            return
+        
+        sudo_users.add(user_id)
+        save_memory()
+        await message.reply_text(f"✅ **Added {username} to sudo users**\n👤 **ID:** `{user_id}`")
+    except Exception:
+        logger.exception("Addsudo handler failed")
+        await message.reply_text("❌ **Addsudo command failed.**")
+
+
+@app.on_message(filters.command("rmsudo", prefixes=COMMAND_PREFIX) & filters.me)
+async def rmsudo_handler(client: Client, message: Message) -> None:
+    try:
+        if message.reply_to_message and message.reply_to_message.from_user:
+            target_user = message.reply_to_message.from_user
+            user_id = target_user.id
+            username = target_user.first_name or f"User({user_id})"
+        else:
+            # Get user ID from command args
+            if len(message.command) < 2:
+                await message.reply_text(
+                    "❌ **Usage:** `.rmsudo <user_id>` or reply to a user with `.rmsudo`"
+                )
+                return
+            try:
+                user_id = int(message.command[1])
+                username = f"User({user_id})"
+            except ValueError:
+                await message.reply_text("❌ **Invalid user ID**")
+                return
+        
+        if user_id not in sudo_users:
+            await message.reply_text(f"⚠️ **User {username} is not a sudo user**")
+            return
+        
+        sudo_users.discard(user_id)
+        save_memory()
+        await message.reply_text(f"✅ **Removed {username} from sudo users**\n👤 **ID:** `{user_id}`")
+    except Exception:
+        logger.exception("Rmsudo handler failed")
+        await message.reply_text("❌ **Rmsudo command failed.**")
+
+
+@app.on_message(filters.command("listsudo", prefixes=COMMAND_PREFIX) & filters.me)
+async def listsudo_handler(client: Client, message: Message) -> None:
+    try:
+        if not sudo_users:
+            await message.reply_text("📋 **Sudo Users List:**\n\n❌ No sudo users added yet")
+            return
+        
+        # Split into chunks if too many users
+        sudo_list = sorted(list(sudo_users))
+        response = "📋 **Sudo Users List:**\n\n"
+        
+        for idx, user_id in enumerate(sudo_list, 1):
+            response += f"{idx}. `{user_id}`\n"
+        
+        response += f"\n**Total:** {len(sudo_users)} sudo user(s)"
+        
+        # Split message if too long
+        chunks = split_message(response, 4096)
+        status = await message.reply_text(chunks[0])
+        for chunk in chunks[1:]:
+            await message.reply_text(chunk)
+    except Exception:
+        logger.exception("Listsudo handler failed")
+        await message.reply_text("❌ **Listsudo command failed.**")
+
+
+@app.on_message(filters.command("ask", prefixes=COMMAND_PREFIX))
+async def ask_handler(client: Client, message: Message) -> None:
+    if not is_sudo_or_owner(message):
+        await message.reply_text("❌ **Only owner or sudo users can use this command.**")
+        return
+    try:
+        query = " ".join(message.command[1:]) if len(message.command) > 1 else ""
         if not query:
             await message.reply_text(
                 "❌ **Usage:** `.ask <your question>`\n\n"
                 "**Example:** `.ask What is Python?`"
             )
             return
+
         reply_text = get_reply_text(message)
         if reply_text:
             query = f"{reply_text}\n\nQuestion: {query}"
-        status = await message.reply_text("**🤔 Thinking...**")
-        response = await get_ai_response(query)
-        await status.edit_text(format_code_block(response))
+
+        status = await message.reply_text("**🔎 Searching the web...**")
+        
+        # Step 1: Get search results
+        search_results = await search_web(query)
+        search_failed = search_results.startswith("❌") or search_results.startswith("⚠️")
+        
+        # Step 2: Generate AI response with search context
+        await status.edit_text("**🤖 Generating AI response...**")
+        response = await get_ai_response(query, search_results if not search_failed else None)
+        
+        # Step 3: Handle failures with fallbacks
+        if response.startswith("❌") or response.startswith("⚠️"):
+            if not search_failed:
+                response = search_results
+            else:
+                response = "❌ **Unable to process request.**"
+        
+        # Step 4: Format and send response
+        clean_response = response.strip()
+        
+        chunks = split_message(clean_response, 4096)
+        await status.edit_text(chunks[0])
+        for chunk in chunks[1:]:
+            await message.reply_text(chunk)
     except Exception:
         logger.exception("Ask handler failed")
         await message.reply_text("❌ **Ask command failed.**")
 
 
-@app.on_message(filters.command("afk", prefixes=COMMAND_PREFIX) & filters.me)
+@app.on_message(filters.command("afk", prefixes=COMMAND_PREFIX))
 async def afk_handler(client: Client, message: Message) -> None:
+    if not is_sudo_or_owner(message):
+        await message.reply_text("❌ **Only owner or sudo users can use this command.**")
+        return
     try:
-        reason = " ".join(message.command[1:]) if message.command else "Away from keyboard"
+        reason = " ".join(message.command[1:]) if len(message.command) > 1 else "Away from keyboard"
         afk_status["is_afk"] = True
         afk_status["reason"] = reason
         afk_status["start_time"] = datetime.now().isoformat()
@@ -239,6 +678,7 @@ async def afk_handler(client: Client, message: Message) -> None:
         await message.reply_text(f"**🔴 AFK Activated**\n📝 **Reason:** {reason}")
     except Exception:
         logger.exception("AFK handler failed")
+        await message.reply_text("❌ **AFK command failed.**")
 
 
 @app.on_message(filters.me & ~filters.command("afk", prefixes=COMMAND_PREFIX))
@@ -258,141 +698,11 @@ async def disable_afk_on_outgoing(client: Client, message: Message) -> None:
         logger.exception("Failed to disable AFK on outgoing message")
 
 
-@app.on_message(filters.command("run", prefixes=COMMAND_PREFIX) & filters.me)
-async def run_handler(client: Client, message: Message) -> None:
-    try:
-        if message.reply_to_message and message.reply_to_message.text:
-            script = message.reply_to_message.text
-        else:
-            script = " ".join(message.command[1:]) if message.command else ""
-        if not script:
-            await message.reply_text(
-                "❌ **Usage:** `.run <python code>` or reply to code with `.run`\n\n"
-                "**Example:** `.run print(2+2)`"
-            )
-            return
-        status = await message.reply_text("**⚙️ Executing...**")
-        result = subprocess.run(
-            ["python", "-c", script],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        output = result.stdout.strip() if result.stdout else result.stderr.strip()
-        output = output[:1000] if output else "No output"
-        await status.edit_text(format_code_block(output, "python"))
-    except subprocess.TimeoutExpired:
-        await message.reply_text("❌ **Execution Timeout** (>10s)")
-    except Exception:
-        logger.exception("Run handler failed")
-        await message.reply_text("❌ **Run command failed.**")
-
-
-@app.on_message(filters.command("del", prefixes=COMMAND_PREFIX) & filters.me)
-async def delete_handler(client: Client, message: Message) -> None:
-    try:
-        if not message.reply_to_message:
-            await message.reply_text("❌ **Usage:** reply to a message with `.del` to delete it")
-            return
-
-        try:
-            await message.reply_to_message.delete()
-        except Exception:
-            logger.exception("Failed to delete replied message")
-
-        try:
-            await message.delete()
-        except Exception:
-            logger.exception("Failed to delete command message")
-    except Exception:
-        logger.exception("Delete handler failed")
-        await message.reply_text("❌ **Delete command failed.**")
-
-
-@app.on_message(filters.command("purge", prefixes=COMMAND_PREFIX) & filters.me)
-async def purge_handler(client: Client, message: Message) -> None:
-    try:
-        if message.command and len(message.command) > 1:
-            try:
-                count = int(message.command[1])
-                if count <= 0:
-                    raise ValueError
-            except ValueError:
-                await message.reply_text("❌ **Usage:** `.purge <count>` where count is a positive number")
-                return
-
-            chat_id = message.chat.id
-            for offset in range(count + 1):
-                msg_id = message.id - offset
-                try:
-                    await client.delete_messages(chat_id, msg_id)
-                except Exception:
-                    logger.exception("Failed to purge message %s", msg_id)
-            return
-
-        if not message.reply_to_message:
-            await message.reply_text("❌ **Usage:** `.purge <count>` or reply to a message with `.purge` to delete range")
-            return
-
-        start_id = message.reply_to_message.id
-        end_id = message.id
-        if start_id > end_id:
-            start_id, end_id = end_id, start_id
-
-        ids_to_delete = list(range(start_id, end_id + 1))
-        try:
-            await client.delete_messages(message.chat.id, ids_to_delete)
-        except Exception:
-            logger.exception("Failed to purge messages %s", ids_to_delete)
-    except Exception:
-        logger.exception("Purge handler failed")
-        await message.reply_text("❌ **Purge command failed.**")
-
-
-@app.on_message(filters.command("help", prefixes=COMMAND_PREFIX) & filters.me)
-async def help_handler(client: Client, message: Message) -> None:
-    try:
-        help_text = """**📚 Userbot Commands Help**
-
-**General:**
-• `.ping` - Check bot responsiveness ⏱️
-• `.id` - Get user/chat/message IDs 🆔
-• `.userlink` - Get user link 👤
-• `.help` - Show this help message 📖
-
-**AI Features:**
-• `.ask <question>` - Ask AI anything 🤖
-• `.ask` (reply) - Ask AI about replied message 💬
-
-**Utilities:**
-• `.run <code>` - Execute Python script ⚙️
-• `.run` (reply) - Execute replied code
-• `.del` (reply) - Delete replied message and this command
-• `.purge <count>` - Delete recent messages in chat
-• `.purge` (reply) - Delete all messages from replied message to this command
-
-**AFK System:**
-• `.afk [reason]` - Set AFK status 🔴
-• AFK disables automatically when you send your next message ✅
-
-**Example Usage:**
-```
-.ping
-.id
-.ask What is machine learning?
-.run print('Hello World')
-.afk Taking a break
-```
-
-❓ **Need help?** Reply to any command with questions!"""
-        await message.reply_text(help_text)
-    except Exception:
-        logger.exception("Help handler failed")
-
-
-@app.on_message(filters.mentioned & filters.incoming & filters.text & ~filters.command(list(COMMANDS), prefixes=COMMAND_PREFIX))
+@app.on_message(filters.incoming & filters.text & ~filters.command(list(COMMANDS), prefixes=COMMAND_PREFIX) & ~filters.me)
 async def afk_auto_reply(client: Client, message: Message) -> None:
     try:
+        cleanup_afk_memory()  # Prevent memory leak
+        
         if not afk_status["is_afk"]:
             return
         if not message.from_user or message.from_user.is_self:
