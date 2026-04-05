@@ -70,9 +70,13 @@ afk_status = {
 # Sudo users storage
 sudo_users = set()
 
+# Conversation history storage for stateful AI
+conversation_history: dict[int, list[dict[str, str]]] = {}
+
 # Constants
 MAX_AFK_REPLIED_TO = 1000  # Prevent unbounded growth
 AFK_CLEANUP_INTERVAL = 3600  # 1 hour in seconds
+MAX_CONVERSATION_HISTORY = 8  # Keep last few ask exchanges per chat
 
 
 # Memory helpers
@@ -85,7 +89,11 @@ def save_memory() -> None:
                 "start_time": afk_status["start_time"],
                 "replied_to": list(afk_status["replied_to"]),
             },
-            "sudo_users": list(sudo_users)
+            "sudo_users": list(sudo_users),
+            "conversation_history": {
+                str(chat_id): history
+                for chat_id, history in conversation_history.items()
+            }
         }
         with open("memory.json", "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -107,7 +115,15 @@ def load_memory() -> None:
             afk_status["reason"] = loaded.get("reason", "")
             afk_status["start_time"] = loaded.get("start_time", None)
             afk_status["replied_to"] = set(loaded.get("replied_to", []))
-            
+
+            # Load conversation history
+            global conversation_history
+            conversation_history = {
+                int(chat_id): messages
+                for chat_id, messages in data.get("conversation_history", {}).items()
+                if isinstance(messages, list)
+            }
+
             # Load sudo users
             global sudo_users
             sudo_users = set(data.get("sudo_users", []))
@@ -121,6 +137,14 @@ def is_sudo_or_owner(message: Message) -> bool:
     if message.from_user.is_self:
         return True
     return message.from_user.id in sudo_users
+
+
+def append_conversation_history(chat_id: int, role: str, content: str) -> None:
+    history = conversation_history.setdefault(chat_id, [])
+    history.append({"role": role, "content": content})
+    if len(history) > MAX_CONVERSATION_HISTORY:
+        del history[:-MAX_CONVERSATION_HISTORY]
+    save_memory()
 
 
 def cleanup_afk_memory() -> None:
@@ -142,7 +166,11 @@ def cleanup_afk_memory() -> None:
     afk_status["last_cleanup"] = now
 
 
-async def get_ai_response(query: str, search_context: str | None = None) -> str:
+async def get_ai_response(
+    query: str,
+    search_context: str | None = None,
+    history: list[dict[str, str]] | None = None,
+) -> str:
     """Use Groq free tier models for generating answers."""
     if not GROQ_API_KEY:
         return "⚠️ **AI Key not configured!**"
@@ -166,10 +194,10 @@ async def get_ai_response(query: str, search_context: str | None = None) -> str:
         "gemma-7b-it",
     ]
 
-    messages = [
-        {"role": "system", "content": AI_SYSTEM_PROMPT},
-        {"role": "user", "content": prompt},
-    ]
+    messages = [{"role": "system", "content": AI_SYSTEM_PROMPT}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": prompt})
 
     async with httpx.AsyncClient(timeout=30) as client:
         for model in free_models:
@@ -730,9 +758,14 @@ async def ask_handler(client: Client, message: Message) -> None:
         search_results = await search_web(query)
         search_failed = search_results.startswith("❌") or search_results.startswith("⚠️")
         
-        # Step 2: Generate AI response with search context
+        # Step 2: Generate AI response with search context and chat history
         await status.edit_text("**🤖 Typing...**")
-        response = await get_ai_response(query, search_results if not search_failed else None)
+        history = conversation_history.get(message.chat.id, [])
+        response = await get_ai_response(
+            query,
+            search_results if not search_failed else None,
+            history,
+        )
         
         # Step 3: Handle failures with fallbacks
         if response.startswith("❌") or response.startswith("⚠️"):
@@ -740,6 +773,11 @@ async def ask_handler(client: Client, message: Message) -> None:
                 response = search_results
             else:
                 response = "❌ **Unable to process request.**"
+
+        # Save chat history only when the result is not a terminal error
+        if not response.startswith("❌") and not response.startswith("⚠️"):
+            append_conversation_history(message.chat.id, "user", query)
+            append_conversation_history(message.chat.id, "assistant", response)
         
         # Step 4: Format and send response
         clean_response = response.strip()
