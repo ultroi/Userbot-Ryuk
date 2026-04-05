@@ -36,6 +36,7 @@ API_HASH = os.getenv("API_HASH", "")
 SESSION_NAME = os.getenv("SESSION_NAME", "userbot")
 COMMAND_PREFIX = "."
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 AI_SYSTEM_PROMPT = os.getenv(
     "AI_SYSTEM_PROMPT",
     "You are a highly intelligent, emotionally aware AI assistant. "
@@ -52,11 +53,19 @@ COMMANDS = [
 ]
 
 # Initialize Pyrogram Client
-app = Client(
-    SESSION_NAME,
-    api_id=API_ID,
-    api_hash=API_HASH
-)
+if BOT_TOKEN:
+    app = Client(
+        SESSION_NAME,
+        api_id=API_ID,
+        api_hash=API_HASH,
+        bot_token=BOT_TOKEN,
+    )
+else:
+    app = Client(
+        SESSION_NAME,
+        api_id=API_ID,
+        api_hash=API_HASH,
+    )
 
 # AFK status storage
 afk_status = {
@@ -858,6 +867,19 @@ async def afk_auto_reply(client: Client, message: Message) -> None:
 
 def main() -> None:
     load_memory()
+
+    session_path = SESSION_NAME
+    if not session_path.endswith(".session"):
+        session_path = f"{session_path}.session"
+
+    if not BOT_TOKEN and not os.path.exists(session_path):
+        logger.error(
+            "No Telegram session file found at %s and BOT_TOKEN is not set. "
+            "Provide a valid .session file or set BOT_TOKEN in the environment.",
+            session_path,
+        )
+        return
+
     logger.info("🚀 Userbot Starting...")
     logger.info(f"📱 Session: {SESSION_NAME}")
     logger.info(f"⚙️ Commands available with prefix: {COMMAND_PREFIX}")
