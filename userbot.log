@@ -1,0 +1,4 @@
+2026-04-05 20:38:25,196 - __main__ - ERROR - No Telegram session file found at userbot.session and BOT_TOKEN is not set. Provide a valid .session file or set BOT_TOKEN in the environment.
+2026-04-05 20:44:35,703 - __main__ - INFO - 🚀 Userbot Starting...
+2026-04-05 20:44:35,705 - __main__ - INFO - 📱 Session: userbot
+2026-04-05 20:44:35,705 - __main__ - INFO - ⚙️ Commands available with prefix: .
