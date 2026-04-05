@@ -304,7 +304,6 @@ def get_reply_text(message: Message) -> str:
 @app.on_message(filters.command("ping", prefixes=COMMAND_PREFIX))
 async def ping_handler(client: Client, message: Message) -> None:
     if not is_sudo_or_owner(message):
-        await message.reply_text("❌ **Only owner or sudo users can use this command.**")
         return
     try:
         start_time = time.time()
@@ -318,7 +317,6 @@ async def ping_handler(client: Client, message: Message) -> None:
 @app.on_message(filters.command("id", prefixes=COMMAND_PREFIX))
 async def id_handler(client: Client, message: Message) -> None:
     if not is_sudo_or_owner(message):
-        await message.reply_text("❌ **Only owner or sudo users can use this command.**")
         return
     try:
         if message.reply_to_message and message.reply_to_message.from_user:
@@ -345,7 +343,6 @@ async def id_handler(client: Client, message: Message) -> None:
 @app.on_message(filters.command("userlink", prefixes=COMMAND_PREFIX))
 async def userlink_handler(client: Client, message: Message) -> None:
     if not is_sudo_or_owner(message):
-        await message.reply_text("❌ **Only owner or sudo users can use this command.**")
         return
     try:
         if message.reply_to_message and message.reply_to_message.from_user:
@@ -365,7 +362,6 @@ async def userlink_handler(client: Client, message: Message) -> None:
 @app.on_message(filters.command("run", prefixes=COMMAND_PREFIX))
 async def run_handler(client: Client, message: Message) -> None:
     if not is_sudo_or_owner(message):
-        await message.reply_text("❌ **Only owner or sudo users can use this command.**")
         return
     try:
         if message.reply_to_message and message.reply_to_message.text:
@@ -400,7 +396,6 @@ async def run_handler(client: Client, message: Message) -> None:
 @app.on_message(filters.command("del", prefixes=COMMAND_PREFIX))
 async def delete_handler(client: Client, message: Message) -> None:
     if not is_sudo_or_owner(message):
-        await message.reply_text("❌ **Only owner or sudo users can use this command.**")
         return
     try:
         if not message.reply_to_message:
@@ -441,7 +436,6 @@ async def delete_handler(client: Client, message: Message) -> None:
 @app.on_message(filters.command("purge", prefixes=COMMAND_PREFIX))
 async def purge_handler(client: Client, message: Message) -> None:
     if not is_sudo_or_owner(message):
-        await message.reply_text("❌ **Only owner or sudo users can use this command.**")
         return
     try:
         if message.command and len(message.command) > 1:
@@ -498,7 +492,6 @@ async def purge_handler(client: Client, message: Message) -> None:
 @app.on_message(filters.command("help", prefixes=COMMAND_PREFIX))
 async def help_handler(client: Client, message: Message) -> None:
     if not is_sudo_or_owner(message):
-        await message.reply_text("❌ **Only owner or sudo users can use this command.**")
         return
     try:
         help_text = """**📚 Userbot Commands Help**
@@ -555,7 +548,6 @@ async def help_handler(client: Client, message: Message) -> None:
 @app.on_message(filters.command("logs", prefixes=COMMAND_PREFIX))
 async def logs_handler(client: Client, message: Message) -> None:
     if not is_sudo_or_owner(message):
-        await message.reply_text("❌ **Only owner or sudo users can use this command.**")
         return
     try:
         count = 1
@@ -579,7 +571,6 @@ async def logs_handler(client: Client, message: Message) -> None:
 @app.on_message(filters.command("redeploy", prefixes=COMMAND_PREFIX))
 async def restart_handler(client: Client, message: Message) -> None:
     if not is_sudo_or_owner(message):
-        await message.reply_text("❌ **Only owner or sudo users can use this command.**")
         return
     try:
         await message.reply_text("🔄 **Restarting bot...**")
@@ -684,7 +675,6 @@ async def listsudo_handler(client: Client, message: Message) -> None:
 @app.on_message(filters.command("ask", prefixes=COMMAND_PREFIX))
 async def ask_handler(client: Client, message: Message) -> None:
     if not is_sudo_or_owner(message):
-        await message.reply_text("❌ **Only owner or sudo users can use this command.**")
         return
     try:
         query = " ".join(message.command[1:]) if len(message.command) > 1 else ""
@@ -731,7 +721,6 @@ async def ask_handler(client: Client, message: Message) -> None:
 @app.on_message(filters.command("afk", prefixes=COMMAND_PREFIX))
 async def afk_handler(client: Client, message: Message) -> None:
     if not is_sudo_or_owner(message):
-        await message.reply_text("❌ **Only owner or sudo users can use this command.**")
         return
     try:
         reason = " ".join(message.command[1:]) if len(message.command) > 1 else "Away from keyboard"
