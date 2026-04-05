@@ -31,7 +31,7 @@ file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
 # Configuration
-API_ID = int(os.getenv("API_ID", "0"))
+API_ID = int(os.getenv("API_ID", ""))
 API_HASH = os.getenv("API_HASH", "")
 SESSION_NAME = os.getenv("SESSION_NAME", "userbot")
 COMMAND_PREFIX = "."
