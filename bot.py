@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import time
 import subprocess
@@ -14,11 +15,18 @@ import logging
 load_dotenv()
 
 # Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+LOG_FILE = os.getenv("LOG_FILE", "userbot.log")
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+stream_handler = logging.StreamHandler()
+stream_handler.setFormatter(formatter)
+logger.addHandler(stream_handler)
+
+file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
 
 # Configuration
 API_ID = int(os.getenv("API_ID", "0"))
@@ -29,7 +37,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 COMMANDS = [
     "ping", "id", "userlink", "ask", "afk",
-    "run", "del", "purge", "help", "addsudo", "rmsudo", "listsudo"
+    "run", "del", "purge", "help", "addsudo", "rmsudo", "listsudo", "logs", "redeploy"
 ]
 
 # Initialize Pyrogram Client
@@ -234,6 +242,21 @@ def split_message(text: str, max_length: int = 4096) -> list:
         chunks.append(current_chunk)
     
     return chunks if chunks else [text[:max_length]]
+
+
+def get_latest_log_line() -> str:
+    if not os.path.exists(LOG_FILE):
+        return "❌ **No logs found.**"
+
+    try:
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            for line in reversed(f.readlines()):
+                if line.strip():
+                    return line.strip()
+        return "❌ **Log file is empty.**"
+    except Exception:
+        logger.exception("Failed to read latest log line")
+        return "❌ **Could not read logs.**"
 
 
 async def run_python_async(code: str, timeout: int = 10) -> tuple:
@@ -522,6 +545,32 @@ async def help_handler(client: Client, message: Message) -> None:
     except Exception:
         logger.exception("Help handler failed")
         await message.reply_text("❌ **Help command failed.**")
+
+
+@app.on_message(filters.command("logs", prefixes=COMMAND_PREFIX))
+async def logs_handler(client: Client, message: Message) -> None:
+    if not is_sudo_or_owner(message):
+        await message.reply_text("❌ **Only owner or sudo users can use this command.**")
+        return
+    try:
+        latest_log = get_latest_log_line()
+        await message.reply_text(latest_log)
+    except Exception:
+        logger.exception("Logs handler failed")
+        await message.reply_text("❌ **Logs command failed.**")
+
+
+@app.on_message(filters.command("redeploy", prefixes=COMMAND_PREFIX))
+async def restart_handler(client: Client, message: Message) -> None:
+    if not is_sudo_or_owner(message):
+        await message.reply_text("❌ **Only owner or sudo users can use this command.**")
+        return
+    try:
+        await message.reply_text("🔄 **Restarting bot...**")
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    except Exception:
+        logger.exception("Restart handler failed")
+        await message.reply_text("❌ **Restart command failed.**")
 
 
 @app.on_message(filters.command("addsudo", prefixes=COMMAND_PREFIX) & filters.me)
