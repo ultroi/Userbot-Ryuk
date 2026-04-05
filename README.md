@@ -28,7 +28,7 @@ A powerful Telegram userbot with AI integration, featuring ping, ID lookup, user
 
 ### **AFK System** 🔴
 - **`.afk [reason]`** - Set AFK status with optional reason
-- **`.back`** - Disable AFK and see how long you were away
+- AFK disables automatically when you send your next message
   - Auto-replies to people who mention you
   - Tracks time away
   - Remembers and doesn't spam same person
@@ -140,12 +140,7 @@ Artificial intelligence refers to...
 ```
 - Bot will auto-reply to people mentioning you
 - Shows reason and time away
-
-```
-.back
-```
-- Disables AFK mode
-- Shows total time away
+- AFK will disable automatically when you send your next message
 
 ---
 

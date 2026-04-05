@@ -236,23 +236,17 @@ async def afk_handler(client: Client, message: Message) -> None:
         logger.exception("AFK handler failed")
 
 
-@app.on_message(filters.command("back", prefixes=COMMAND_PREFIX) & filters.me)
-async def back_handler(client: Client, message: Message) -> None:
+@app.on_message(filters.me)
+async def disable_afk_on_outgoing(client: Client, message: Message) -> None:
     try:
         if not afk_status["is_afk"]:
-            await message.reply_text("❌ **Not AFK!**")
             return
-        start_time = datetime.fromisoformat(afk_status["start_time"])
-        duration = datetime.now() - start_time
-        minutes = int(duration.total_seconds() / 60)
+        if message.command and message.command[0].lower() == "afk":
+            return
         afk_status["is_afk"] = False
         save_memory()
-        await message.reply_text(
-            f"**✅ Back Online**\n"
-            f"⏱️ **Was AFK for:** `{minutes} minutes`"
-        )
     except Exception:
-        logger.exception("Back handler failed")
+        logger.exception("Failed to disable AFK on outgoing message")
 
 
 @app.on_message(filters.command("run", prefixes=COMMAND_PREFIX) & filters.me)
@@ -370,7 +364,7 @@ async def help_handler(client: Client, message: Message) -> None:
 
 **AFK System:**
 • `.afk [reason]` - Set AFK status 🔴
-• `.back` - Turn off AFK status ✅
+• AFK disables automatically when you send your next message ✅
 
 **Example Usage:**
 ```
