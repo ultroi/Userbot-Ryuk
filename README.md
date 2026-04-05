@@ -1,160 +1,236 @@
-# AuraDoc Telegram Bot
+# 🤖 Userbot-Ryuk - Telegram Userbot
 
-AuraDoc is a production-ready asynchronous Telegram bot written in Python using the `python-telegram-bot` v20+ library. It provides a comprehensive suite of document conversion utilities, PDF manipulation tools, and OCR capabilities, all accessible via an intuitive inline keyboard interface.
-
-> **Bot name:** AuraDoc
+A powerful Telegram userbot with AI integration, featuring ping, ID lookup, user links, AFK system, and Python script execution.
 
 ---
 
-## 🚀 Features
+## ✨ Features
 
-### 📄 Document conversions
-- Image → PDF (send multiple images or files; use `/list` to view queue, `/rotate`, `/swap`, `/remove`, `/rename` commands or the inline buttons to adjust order/rotation/names, and optionally set the output PDF filename before conversion; at review stage you can tap 📋 to preview each file)
-- Image(s) → Word (queue review screen also offers **To DOC**; runs OCR on all images and produces a `.docx`)
-- OCR (requires tesseract binary; may not be provided on some hosts)
-- Word/Excel/PowerPoint → PDF (depends on LibreOffice; this tool may be unavailable on restricted hosts)
-- PDF → Word (.docx)
-- Word → PDF
-- Excel → PDF
-- PowerPoint → PDF
+### **General Commands**
+- **`.ping`** - Check bot responsiveness with latency ⏱️
+- **`.id`** - Get user ID, chat ID, message ID, and timestamp 🆔
+- **`.userlink`** - Get user link (your link or reply to someone's link) 👤
+- **`.help`** - Show all available commands 📖
 
-**Image management commands**: while adding images you may send text commands to control the list:
+### **AI Features** 🤖
+- **`.ask <question>`** - Ask AI questions and get intelligent responses
+- **`.ask` (reply)** - Ask AI about replied messages with context
+  - Automatically includes message context in the query
+  - Responses formatted in code blocks for clarity
+  - AI uses Groq (free tier, very fast)
 
-```
-/rotate N D    # rotate image #N by D degrees
-/swap i j      # swap positions of image i and j
-/remove N      # remove image N from the list
-/list          # show current images and order
-```
+### **Python Script Execution** ⚙️
+- **`.run <code>`** - Execute Python code directly
+- **`.run` (reply)** - Execute Python code from replied message
+  - Output limited to 1000 characters
+  - Automatic code block formatting
+  - 10-second timeout for safety
 
-### 🧩 PDF tools
-- Merge multiple PDFs
-- Split PDF into pages
-- Remove a specific page
-- Rotate PDF pages
-- Compress PDF
-- Add a watermark
-- Protect PDF with password
-
-### 🔍 OCR
-- Extract text from images using Tesseract
-- Returns extracted text as a Word document
-
-### 🛠 Other highlights
-- Async handlers & modern architecture
-- Inline keyboard UI for tool selection
-- Auto-detects file types sent by users
-- "Processing..." status messages
-- Unique file names for concurrent users
-- Temporary files stored in `downloads/` and cleaned hourly
-- Basic user tracking with SQLite (`users.db`)
-- Private-chat only operation with error handling
+### **AFK System** 🔴
+- **`.afk [reason]`** - Set AFK status with optional reason
+- **`.back`** - Disable AFK and see how long you were away
+  - Auto-replies to people who mention you
+  - Tracks time away
+  - Remembers and doesn't spam same person
 
 ---
 
-## 🧩 Prerequisites
+## 🚀 Setup Instructions
 
-- Python 3.10 or higher
-- [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) installed and on PATH (optional; required for OCR feature, not available on all hosting platforms)
-- [LibreOffice](https://www.libreoffice.org/) installed and accessible (`soffice` command, used for Word/Excel/PowerPoint conversions). This binary is **not provided on certain hosts (e.g. StackHost free tier)**, so those conversions may fail.
+### **1. Clone/Download Repository**
+```bash
+git clone <your-repo>
+cd Userbot-Ryuk
+```
 
-Install Python dependencies:
-
+### **2. Install Dependencies**
 ```bash
 pip install -r requirements.txt
 ```
 
-**requirements.txt** should contain:
+### **3. Get Telegram API Credentials**
+- Go to [my.telegram.org](https://my.telegram.org)
+- Log in with your phone number
+- Go to API Development Tools
+- Create a new app
+- Copy your **API ID** and **API Hash**
+
+### **4. Get AI API Key (Optional but Recommended)**
+- Visit [Groq Console](https://console.groq.com/)
+- Sign up for free
+- Create an API key in dashboard
+
+### **5. Configure Environment**
+Create `.env` file:
+```bash
+cp .env.example .env
 ```
-python-telegram-bot>=20.0a6
-Pillow
-img2pdf
-PyPDF2
-pdf2docx
-docx2pdf
-pytesseract
-python-docx
-```
 
----
-
-## 🛠 Setup & Running
-
-1. Clone or download this repository.
-2. Set your bot token as an environment variable:
-   ```bash
-   export BOT_TOKEN="<your_token_here>"  # Linux/macOS
-   setx BOT_TOKEN "<your_token_here>"    # Windows (restart terminal)
-   ```
-3. Run the bot:
-   ```bash
-   python bot.py
-   ```
-4. Chat with the bot on Telegram and choose tools via the inline keyboard.
-
----
-
-## 🗄 Data & Storage
-
-- Temporary files are placed in `downloads/` and auto-purged hourly.
-- Basic user info (chat_id, username, first/last seen) is stored persistently in `users.db` (SQLite).
-
----
-
-## 📦 Deployment Tips
-
-- Run inside a virtual environment or Docker container.
-- Use a process manager (systemd, pm2, supervisord) to keep the bot running.
-- Configure periodic database backups if needed.
-- To extend functionality, add new callbacks and handlers.
-
----
-
-## 📝 License
-
-This project is provided as-is under the MIT license. Feel free to modify and distribute.
-
----
-
-For questions or contributions, open an issue or pull request in the repository.
-
----
-
-## Userbot + Gemini AI integration (new)
-
-This workspace now includes `bot.py` — a simple Telegram *userbot* (runs on your user account) that integrates with a Gemini-compatible HTTP API. It supports:
-- `.ask <question>` as a reply to any message: sends the replied message as context plus your question to the AI and replies with the AI's answer.
-- `.cmd` actions to control Telegram from your account (send, reply, delete, forward, block, unblock).
-
-Setup (layman steps):
-
-1. Create a file named `.env` in the project root with these values filled:
-
-```
-API_ID=123456     # from https://my.telegram.org
+Edit `.env` with your credentials:
+```env
+API_ID=123456789
 API_HASH=your_api_hash_here
+YOUR_USER_ID=987654321
+GROQ_API_KEY=your_groq_key_here
 SESSION_NAME=userbot
-GEMINI_API_URL=https://your.gemini.endpoint/here
-GEMINI_API_KEY=your_gemini_key_here
-# Optional: comma-separated allowed user ids (if set, only these users can use commands)
-AUTH_USER_IDS=123456789
 ```
 
-2. Install dependencies:
+**To get YOUR_USER_ID:**
+1. Run the bot with placeholder ID
+2. Send `.id` command to any chat
+3. Copy your User ID and update `.env`
 
-```bash
-pip install -r requirements.txt
-```
-
-3. Run the userbot:
-
+### **6. Run the Userbot**
 ```bash
 python bot.py
 ```
 
-4. Use it from your Telegram account (the one you logged in with when the Pyrogram session was created): reply to a message and send `.ask What is this?` — the bot will reply with the Gemini answer. Send `.cmd help` for available `.cmd` actions.
+First run will create `userbot.session` file after scanning QR code.
 
-Notes:
-- The `GEMINI_API_URL` should point to an HTTP endpoint compatible with your Gemini/free provider; adjust the request shape if your provider needs a different JSON format.
-- This userbot operates as *you* — it uses your Telegram account. Be careful when running it and only run on trusted machines.
-- For production use, restrict `AUTH_USER_IDS` to a small set of admin ids or keep default (only your own account can control it).
+---
+
+## 📖 Usage Examples
+
+### **Ping Check**
+```
+.ping
+```
+**Output:** Shows latency in milliseconds
+
+### **Get IDs**
+```
+.id
+```
+**Output:**
+```
+📋 ID Information:
+👤 User ID: 123456789
+💬 Chat ID: -100123456789
+📨 Message ID: 456
+⏰ Timestamp: 1712250000
+```
+
+### **User Links**
+```
+.userlink
+```
+**Output:** Clickable link to your profile
+
+### **Ask AI**
+```
+.ask What is artificial intelligence?
+```
+or reply to a message and send `.ask explain this`
+
+**Output:**
+```
+Artificial intelligence refers to...
+```
+
+### **Run Python**
+```
+.run print(2**10)
+.run import math; print(math.pi)
+.run sum([1,2,3,4,5])
+```
+
+### **AFK Mode**
+```
+.afk In a meeting, will reply soon
+```
+- Bot will auto-reply to people mentioning you
+- Shows reason and time away
+
+```
+.back
+```
+- Disables AFK mode
+- Shows total time away
+
+---
+
+## 📋 Command Prefix
+
+All commands use **`.`** (dot) as prefix:
+- `.ping`
+- `.ask`
+- `.run`
+- etc.
+
+---
+
+## ⚙️ Configuration
+
+### **Environment Variables**
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `API_ID` | Telegram API ID | ✅ Yes |
+| `API_HASH` | Telegram API Hash | ✅ Yes |
+| `YOUR_USER_ID` | Your Telegram User ID | ✅ Yes |
+| `GROQ_API_KEY` | Groq AI API Key | ❌ Optional |
+| `SESSION_NAME` | Session file name | ❌ Optional |
+
+---
+
+## 🔒 Security Notes
+
+- **Never share** your API credentials
+- **Never share** your session files
+- Only you can use this userbot (filtered by YOUR_USER_ID)
+- Keep `.env` and `.session` files private
+- Use strong passwords for Telegram account
+
+---
+
+## 📦 Dependencies
+
+- `pyrogram` - Telegram Client
+- `tgcrypto` - Encryption
+- `httpx` - Async HTTP requests
+- `python-dotenv` - Environment variables
+
+---
+
+## 🐛 Troubleshooting
+
+### **"Invalid API ID" Error**
+- Check API_ID and API_HASH from my.telegram.org
+- Make sure they're in `.env` file
+
+### **"Connection refused"**
+- Check internet connection
+- Telegram might be blocked in your region
+
+### **AI not working**
+- Verify GROQ_API_KEY is valid
+- Check API quota at console.groq.com
+
+### **Session file issues**
+- Delete `.session` and `.session-journal` files
+- Re-run bot to generate new session
+
+---
+
+## 📝 Notes
+
+- Command prefix is **`.`** (required for all commands)
+- Commands only work for YOUR_USER_ID
+- Responses are formatted with **bold**, `code blocks`, and emojis for clarity
+- AI responses auto-wrapped in code blocks
+- Python script output limited to 1000 chars for safety
+
+---
+
+## 🤝 Contributing
+
+Feel free to modify and add features!
+
+---
+
+## ⚖️ Disclaimer
+
+This is for personal use only. Comply with Telegram's Terms of Service. Use responsibly!
+
+---
+
+**Made with ❤️ for Telegram users**
