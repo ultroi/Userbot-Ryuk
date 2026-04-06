@@ -9,6 +9,7 @@ import re
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from pyrogram import Client, filters
+from pyrogram.errors import ChatWriteForbidden
 from pyrogram.types import Message
 import httpx
 import logging
@@ -68,6 +69,12 @@ afk_status = {
 
 # Sudo users storage
 sudo_users = set()
+# Load optional sudo users from environment, e.g. SUDO_USERS="123456789 987654321"
+SUDO_USERS = os.getenv("SUDO_USERS", "")
+if SUDO_USERS:
+    for user_id in re.split(r"[\s,;]+", SUDO_USERS.strip()):
+        if user_id.isdigit():
+            sudo_users.add(int(user_id))
 
 # Conversation history storage for stateful AI
 conversation_history: dict[int, list[dict[str, str]]] = {}
@@ -129,7 +136,13 @@ def load_memory() -> None:
 
             # Load sudo users
             global sudo_users
-            sudo_users = set(data.get("sudo_users", []))
+            loaded_sudo = set()
+            for user_id in data.get("sudo_users", []):
+                if isinstance(user_id, int):
+                    loaded_sudo.add(user_id)
+                elif isinstance(user_id, str) and user_id.isdigit():
+                    loaded_sudo.add(int(user_id))
+            sudo_users.update(loaded_sudo)
     except Exception:
         logger.exception("Failed to load memory")
 
@@ -844,14 +857,29 @@ async def ask_handler(client: Client, message: Message) -> None:
         if reply_text:
             query = f"{reply_text}\n\nQuestion: {query}"
 
-        status = await message.reply_text("**🔎 Thinking**")
+        try:
+            status = await message.reply_text("**🔎 Thinking**")
+        except ChatWriteForbidden:
+            logger.warning(
+                "Ask handler blocked in chat %s: write forbidden while sending status.",
+                message.chat.id,
+            )
+            return
         
         # Step 1: Get search results
         search_results = await search_web(query)
         search_failed = search_results.startswith("❌") or search_results.startswith("⚠️")
         
         # Step 2: Generate AI response with search context and chat history
-        await status.edit_text("**🤖 Typing...**")
+        try:
+            await status.edit_text("**🤖 Typing...**")
+        except ChatWriteForbidden:
+            logger.warning(
+                "Ask handler blocked in chat %s: write forbidden while editing status.",
+                message.chat.id,
+            )
+            return
+
         history = conversation_history.get(message.chat.id, [])
         response = await get_ai_response(
             query,
@@ -875,12 +903,38 @@ async def ask_handler(client: Client, message: Message) -> None:
         clean_response = response.strip()
         
         chunks = split_message(clean_response, 4096)
-        await status.edit_text(chunks[0])
+        try:
+            await status.edit_text(chunks[0])
+        except ChatWriteForbidden:
+            logger.warning(
+                "Ask handler blocked in chat %s: write forbidden while sending response.",
+                message.chat.id,
+            )
+            return
+
         for chunk in chunks[1:]:
-            await message.reply_text(chunk)
+            try:
+                await message.reply_text(chunk)
+            except ChatWriteForbidden:
+                logger.warning(
+                    "Ask handler blocked in chat %s: write forbidden while sending chunk.",
+                    message.chat.id,
+                )
+                return
+    except ChatWriteForbidden:
+        logger.warning(
+            "Ask handler blocked in chat %s: write forbidden.",
+            message.chat.id,
+        )
     except Exception:
         logger.exception("Ask handler failed")
-        await message.reply_text("❌ **Ask command failed.**")
+        try:
+            await message.reply_text("❌ **Ask command failed.**")
+        except ChatWriteForbidden:
+            logger.warning(
+                "Failed to send Ask command failure notification in chat %s: write forbidden.",
+                message.chat.id,
+            )
 
 
 @app.on_message(filters.command("afk", prefixes=COMMAND_PREFIX))
@@ -949,7 +1003,14 @@ async def afk_auto_reply(client: Client, message: Message) -> None:
             f"⏱️ **Away for:** {minutes} minutes\n\n"
             f"💬 I'll reply when I'm back!"
         )
-        await message.reply_text(response)
+        try:
+            await message.reply_text(response)
+        except ChatWriteForbidden:
+            logger.warning(
+                "AFK reply blocked in chat %s: write forbidden. Skipping reply.",
+                message.chat.id,
+            )
+            return
         afk_status["replied_to"].add(sender_id)
         save_memory()
     except Exception:
