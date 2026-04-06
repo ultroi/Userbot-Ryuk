@@ -39,17 +39,15 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 AI_SYSTEM_PROMPT = os.getenv(
     "AI_SYSTEM_PROMPT",
     "You are a highly intelligent, emotionally aware AI assistant. "
-    "You speak in a warm, slightly dramatic, charming tone. "
+    "You speak in a warm, slightly, charming tone. "
     "You understand context deeply and respond naturally like a human. "
     "Keep responses engaging, slightly expressive but not cringe. "
     "Avoid robotic replies. Maintain personality consistency. "
-    "Adapt tone based on user mood. Be helpful but also charismatic. "
-    "Always address the user as RYUK in every response, and never call them by any other name."
 )
 
 COMMANDS = [
     "ping", "id", "userlink", "ask", "afk",
-    "run", "del", "purge", "help", "addsudo", "rmsudo", "listsudo", "logs", "redeploy"
+    "run", "del", "purge", "help", "addsudo", "rmsudo", "listsudo", "logs", "redeploy", "end"
 ]
 
 # Initialize Pyrogram Client
@@ -73,6 +71,10 @@ sudo_users = set()
 
 # Conversation history storage for stateful AI
 conversation_history: dict[int, list[dict[str, str]]] = {}
+
+# Process tracking for .run and .end commands
+running_process: subprocess.Popen | None = None
+process_lock = asyncio.Lock()
 
 # Constants
 MAX_AFK_REPLIED_TO = 1000  # Prevent unbounded growth
@@ -236,9 +238,10 @@ async def get_ai_response(
 
 
 async def search_web(query: str) -> str:
-    """Use DuckDuckGo free API for search (no authentication required)."""
+    """Enhanced web search using DuckDuckGo API with multiple result types."""
     try:
         async with httpx.AsyncClient(timeout=20) as client:
+            # Try DuckDuckGo API first
             params = {
                 "q": query,
                 "format": "json",
@@ -246,32 +249,56 @@ async def search_web(query: str) -> str:
                 "skip_disambig": "1",
             }
             response = await client.get("https://api.duckduckgo.com/", params=params)
+            
             if response.status_code not in {200, 202}:
-                logger.error("Search request failed: %s", response.status_code)
+                logger.error("DuckDuckGo search failed: %s", response.status_code)
                 return "❌ **Search failed.**"
 
             data = response.json()
-            if data.get("AbstractText"):
-                return data["AbstractText"]
-
-            if data.get("Answer"):
-                return data["Answer"]
-
-            related = data.get("RelatedTopics", [])
             results = []
+            
+            # Priority 1: Get direct answer/definition
+            if data.get("Answer"):
+                results.append(f"**Answer:** {data['Answer']}")
+            
+            # Priority 2: Get abstract/summary
+            if data.get("AbstractText"):
+                abstract = data["AbstractText"]
+                if abstract and abstract not in results:
+                    results.append(f"**Summary:** {abstract}")
+            
+            # Priority 3: Get related topics/results
+            related = data.get("RelatedTopics", [])
+            topic_results = []
             for item in related:
-                if isinstance(item, dict) and item.get("Text"):
-                    results.append(item["Text"])
-                if len(results) >= 3:
-                    break
-
+                if isinstance(item, dict):
+                    if item.get("Text"):
+                        text = item["Text"]
+                        # Clean up the text
+                        if " -- " in text:
+                            title, desc = text.split(" -- ", 1)
+                            topic_results.append(f"• **{title}:** {desc[:150]}")
+                        else:
+                            topic_results.append(f"• {text[:150]}")
+                    if len(topic_results) >= 5:
+                        break
+            
+            if topic_results:
+                results.append("**Related Results:**\n" + "\n".join(topic_results))
+            
+            # Priority 4: Get instant answer (for definitions, etc.)
+            instant_answer = data.get("AbstractSource") or data.get("Redirect", "")
+            
             if results:
-                return "\n".join(results[:3])
-
-            return "❌ **No search results found.**"
-    except Exception:
-        logger.exception("Search request failed")
-        return "❌ **Search failed.**"
+                return "\n\n".join(results)
+            
+            return "❌ **No search results found for this query.**"
+    except asyncio.TimeoutError:
+        logger.error("Search request timeout")
+        return "⚠️ **Search timed out. Please try again.**"
+    except Exception as e:
+        logger.exception("Search request failed: %s", str(e))
+        return "❌ **Search failed - please try again.**"
 
 
 def split_message(text: str, max_length: int = 4096) -> list:
@@ -321,25 +348,38 @@ def get_latest_log_lines(count: int = 1) -> str:
 
 async def run_python_async(code: str, timeout: int = 10) -> tuple:
     """Run Python code asynchronously without blocking the event loop."""
+    global running_process
     try:
-        # Use asyncio to prevent blocking
+        async with process_lock:
+            # Use subprocess with Popen to allow process termination
+            running_process = subprocess.Popen(
+                ["python", "-c", code],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+        
+        # Wait for process with timeout
         loop = asyncio.get_event_loop()
-        result = await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                lambda: subprocess.run(
-                    ["python", "-c", code],
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout
-                )
-            ),
+        stdout, stderr = await asyncio.wait_for(
+            loop.run_in_executor(None, running_process.communicate, timeout),
             timeout=timeout + 1
         )
-        return (result.stdout.strip(), result.stderr.strip())
+        
+        async with process_lock:
+            running_process = None
+        
+        return (stdout.strip() if stdout else "", stderr.strip() if stderr else "")
     except asyncio.TimeoutError:
-        return ("", "Execution Timeout")
+        # Terminate if timeout
+        async with process_lock:
+            if running_process:
+                running_process.terminate()
+                running_process = None
+        return ("", "⏱️ Execution Timeout (process terminated)")
     except Exception as e:
+        async with process_lock:
+            running_process = None
         return ("", str(e))
 
 
@@ -373,14 +413,13 @@ def get_reply_text(message: Message) -> str:
             return message.reply_to_message.caption
     return ""
 
-
 @app.on_message(filters.command("ping", prefixes=COMMAND_PREFIX))
-async def ping_handler(client: Client, message: Message) -> None:
+async def ping_handler(_: Client, message: Message) -> None:
     if not is_sudo_or_owner(message):
         return
     try:
         start_time = time.time()
-        status = await message.reply_text("**🏓 Pinging...**")
+        status = await message.edit_text("**🏓 Pinging...**")
         elapsed = (time.time() - start_time) * 1000
         await status.edit_text(f"**🏓 Pong!**\n⏱️ `{elapsed:.2f}ms`")
     except Exception:
@@ -437,24 +476,43 @@ async def run_handler(client: Client, message: Message) -> None:
     if not is_sudo_or_owner(message):
         return
     try:
+        script = ""
+        
+        # Check if replying to a message
         if message.reply_to_message and message.reply_to_message.text:
             script = message.reply_to_message.text
         else:
-            script = " ".join(message.command[1:]) if len(message.command) > 1 else ""
+            # Get script from command arguments
+            args = " ".join(message.command[1:]) if len(message.command) > 1 else ""
+            
+            # Check if it's a file path
+            if args and (args.endswith(".py") or args.endswith(".txt") or os.path.exists(args)):
+                try:
+                    with open(args, "r", encoding="utf-8") as f:
+                        script = f.read()
+                except FileNotFoundError:
+                    await message.reply_text(f"❌ **File not found:** `{args}`")
+                    return
+                except Exception as e:
+                    await message.reply_text(f"❌ **Error reading file:** `{e}`")
+                    return
+            else:
+                script = args
+        
         script = normalize_python_code(script)
         if not script:
             await message.reply_text(
                 "❌ **Usage:** `.run <python code>` or reply to code with `.run`\n\n"
-                "**Example:** `.run print(2+2)`"
+                "**Examples:**\n"
+                "• `.run print(2+2)`\n"
+                "• `.run script.py`\n"
+                "• Reply to code and use `.run`"
             )
             return
         
         # Safety warning
         warning_msg = await message.reply_text(
-            "⚠️ **SECURITY WARNING**\n"
-            "You are about to execute Python code. This can be dangerous!\n"
-            "Make sure you trust the code source.\n\n"
-            "**Executing...**"
+            "Running..."
         )
         
         stdout, stderr = await run_python_async(script)
@@ -465,6 +523,28 @@ async def run_handler(client: Client, message: Message) -> None:
     except Exception:
         logger.exception("Run handler failed")
         await message.reply_text("❌ **Run command failed.**")
+
+
+@app.on_message(filters.command("end", prefixes=COMMAND_PREFIX))
+async def end_handler(client: Client, message: Message) -> None:
+    if not is_sudo_or_owner(message):
+        return
+    try:
+        global running_process
+        async with process_lock:
+            if running_process and running_process.poll() is None:
+                running_process.terminate()
+                try:
+                    running_process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    running_process.kill()
+                running_process = None
+                await message.reply_text("✅ **Code execution terminated successfully!**")
+            else:
+                await message.reply_text("⚠️ **No running code to terminate**")
+    except Exception:
+        logger.exception("End handler failed")
+        await message.reply_text("❌ **Failed to terminate process.**")
 
 
 @app.on_message(filters.command("del", prefixes=COMMAND_PREFIX))
@@ -746,7 +826,8 @@ async def listsudo_handler(client: Client, message: Message) -> None:
         await message.reply_text("❌ **Listsudo command failed.**")
 
 
-@app.on_message(filters.command("ask", prefixes=COMMAND_PREFIX) & AUTHORIZED_SENDER)
+
+@app.on_message(filters.command(["ai", "ask"], prefixes=COMMAND_PREFIX) & AUTHORIZED_SENDER)
 async def ask_handler(client: Client, message: Message) -> None:
     if not is_sudo_or_owner(message):
         return
@@ -845,6 +926,14 @@ async def afk_auto_reply(client: Client, message: Message) -> None:
             return
         if not message.from_user or message.from_user.is_self:
             return
+        
+        # Only reply if: 1) Direct message OR 2) Message mentions/replies to you
+        is_private = message.chat.type in ("private", "bot")
+        is_mentioned = message.mentioned or (message.reply_to_message and message.reply_to_message.from_user and message.reply_to_message.from_user.is_self)
+        
+        if not (is_private or is_mentioned):
+            return
+        
         sender_id = message.from_user.id
         if sender_id in afk_status["replied_to"]:
             return
