@@ -365,7 +365,15 @@ async def search_web(query: str) -> str:
                 "no_html": "1",
                 "skip_disambig": "1",
             }
-            response = await client.get("https://api.duckduckgo.com/", params=params)
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+            }
+            response = await client.get(
+                "https://api.duckduckgo.com/",
+                params=params,
+                headers=headers,
+                follow_redirects=True,
+            )
             
             if response.status_code not in {200, 202}:
                 logger.error("DuckDuckGo search failed: %s", response.status_code)
