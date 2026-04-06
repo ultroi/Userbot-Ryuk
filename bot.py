@@ -6,6 +6,7 @@ import subprocess
 import asyncio
 import ast
 import re
+import tempfile
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from pyrogram import Client, filters
@@ -442,27 +443,80 @@ def normalize_python_code(code: str) -> str:
     return "\n".join(cleaned)
 
 
+SUPPORTED_LANGUAGES = {
+    "python": {"cmd": [sys.executable], "ext": ".py"},
+    "py": {"cmd": [sys.executable], "ext": ".py"},
+    "js": {"cmd": ["node"], "ext": ".js"},
+    "node": {"cmd": ["node"], "ext": ".js"},
+    "bash": {"cmd": ["bash"], "ext": ".sh"},
+    "sh": {"cmd": ["bash"], "ext": ".sh"},
+    "php": {"cmd": ["php"], "ext": ".php"},
+    "ruby": {"cmd": ["ruby"], "ext": ".rb"},
+    "rb": {"cmd": ["ruby"], "ext": ".rb"},
+    "perl": {"cmd": ["perl"], "ext": ".pl"},
+    "pl": {"cmd": ["perl"], "ext": ".pl"},
+    "lua": {"cmd": ["lua"], "ext": ".lua"},
+}
+EXTENSION_LANGUAGE = {
+    ".py": "python",
+    ".js": "js",
+    ".sh": "bash",
+    ".bash": "bash",
+    ".php": "php",
+    ".rb": "ruby",
+    ".pl": "perl",
+    ".lua": "lua",
+}
+
+
+def detect_language_from_extension(filename: str) -> str | None:
+    ext = os.path.splitext(filename)[1].lower()
+    return EXTENSION_LANGUAGE.get(ext)
+
+
+def get_runner(language: str) -> list[str] | None:
+    if not language:
+        return None
+    return SUPPORTED_LANGUAGES.get(language.lower(), {}).get("cmd")
+
+
+def write_code_to_temp_file(code: str, language: str) -> str:
+    extension = SUPPORTED_LANGUAGES.get(language, {}).get("ext", ".txt")
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=extension)
+    temp_file.write(code.encode("utf-8"))
+    temp_file.close()
+    return temp_file.name
+
+
+async def run_code_async(command: list[str], cwd: str | None = None, timeout: int = 30) -> tuple[str, str]:
+    """Execute any supported code asynchronously"""
+    global running_process
+    async with process_lock:
+        if running_process and running_process.returncode is None:
+            raise RuntimeError("Another task is already running")
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+        )
+        running_process = process
+
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        return stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
+        return "", "Timeout: Execution took too long"
+    finally:
+        async with process_lock:
+            running_process = None
+
+
 async def run_python_async(code: str) -> tuple[str, str]:
     """Execute Python code asynchronously"""
-    global running_process
-    
-    async with process_lock:
-        try:
-            process = await asyncio.create_subprocess_exec(
-                sys.executable, "-c", code,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            running_process = process
-            
-            try:
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=10)
-                return stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
-            except asyncio.TimeoutError:
-                process.kill()
-                return "", "Timeout: Execution took too long"
-        finally:
-            running_process = None
+    return await run_code_async([sys.executable, "-c", code])
 
 
 def split_message(text: str, max_len: int = 4096) -> list[str]:
@@ -659,78 +713,168 @@ async def ask_handler(client: Client, message: Message) -> None:
             logger.warning("Failed to send error: write forbidden")
 
 
-@app.on_message(filters.command("afk", prefixes=COMMAND_PREFIX))
-async def afk_handler(client: Client, message: Message) -> None:
+@app.on_message(filters.command("run", prefixes=COMMAND_PREFIX) & AUTHORIZED_SENDER)
+async def run_handler(client: Client, message: Message) -> None:
+    if not is_sudo_or_owner(message):
+        return
+    temp_file = None
+    try:
+        args = message.command[1:]
+        language = None
+        code = ""
+        file_path = None
+
+        if message.reply_to_message and message.reply_to_message.document:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                file_name = message.reply_to_message.document.file_name or "code"
+                file_path = os.path.join(tmp_dir, file_name)
+                await message.reply_to_message.download(file_name=file_path)
+                language = detect_language_from_extension(file_name)
+                if not language and args:
+                    language = args[0].lower()
+                if not language:
+                    await message.reply_text(
+                        "❌ **Unsupported file type. Use `.run <language>` or send a supported file extension.**"
+                    )
+                    return
+                runner = get_runner(language)
+                if not runner:
+                    await message.reply_text("❌ **Unsupported language.**")
+                    return
+
+                status = await message.reply_text("⏳ **Running file...**")
+                stdout, stderr = await run_code_async(runner + [file_path])
+        else:
+            if message.reply_to_message and (message.reply_to_message.text or message.reply_to_message.caption):
+                code = message.reply_to_message.text or message.reply_to_message.caption
+                if args and args[0].lower() in SUPPORTED_LANGUAGES:
+                    language = args[0].lower()
+                    if len(args) > 1:
+                        code = " ".join(args[1:])
+                else:
+                    language = args[0].lower() if args else "python"
+            else:
+                if not args:
+                    await message.reply_text(
+                        "❌ **Usage:** `.run <language> <code>` or reply to code/file with `.run`"
+                    )
+                    return
+                if args[0].lower() in SUPPORTED_LANGUAGES:
+                    language = args[0].lower()
+                    code = " ".join(args[1:])
+                elif os.path.exists(args[0]):
+                    file_path = args[0]
+                    language = detect_language_from_extension(file_path)
+                else:
+                    language = "python"
+                    code = " ".join(args)
+
+            if not file_path:
+                if not code.strip():
+                    await message.reply_text(
+                        "❌ **Usage:** `.run <language> <code>` or reply to code/file with `.run`"
+                    )
+                    return
+                if language not in SUPPORTED_LANGUAGES:
+                    await message.reply_text(
+                        "❌ **Unsupported language. Supported:** python, js, bash, php, ruby, perl, lua"
+                    )
+                    return
+                temp_file = write_code_to_temp_file(code, language)
+                file_path = temp_file
+
+            runner = get_runner(language)
+            if not runner:
+                await message.reply_text("❌ **Unsupported language.**")
+                return
+
+            status = await message.reply_text("⏳ **Running code...**")
+            stdout, stderr = await run_code_async(runner + [file_path])
+
+        output = stdout if stdout else stderr
+        if not output:
+            output = "No output"
+        if len(output) > 1500:
+            output = output[:1500] + "\n...output truncated"
+
+        await status.edit_text(format_code_block(output, "text"))
+    except RuntimeError as e:
+        await message.reply_text(f"⚠️ {e}")
+    except Exception:
+        logger.exception("Run handler failed")
+        await message.reply_text("❌ **Run command failed.**")
+    finally:
+        if temp_file and os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+            except Exception:
+                pass
+
+
+@app.on_message(filters.command("end", prefixes=COMMAND_PREFIX) & AUTHORIZED_SENDER)
+async def end_handler(client: Client, message: Message) -> None:
     if not is_sudo_or_owner(message):
         return
     try:
-        reason = " ".join(message.command[1:]) if len(message.command) > 1 else "Away from keyboard"
-        afk_status["is_afk"] = True
-        afk_status["reason"] = reason
-        afk_status["start_time"] = datetime.now().isoformat()
-        afk_status["replied_to"] = set()
-        save_memory()
-        await message.reply_text(f"**🔴 AFK Activated**\n📝 **Reason:** {reason}")
+        async with process_lock:
+            if running_process and running_process.returncode is None:
+                running_process.terminate()
+                try:
+                    await asyncio.wait_for(running_process.wait(), timeout=2)
+                except asyncio.TimeoutError:
+                    running_process.kill()
+                
+                await message.reply_text("✅ **Running task terminated successfully!**")
+                return
+
+        await message.reply_text("⚠️ **No running task to terminate.**")
     except Exception:
-        logger.exception("AFK handler failed")
-        await message.reply_text("❌ **AFK command failed.**")
+        logger.exception("End handler failed")
+        await message.reply_text("❌ **End command failed.**")
 
 
-@app.on_message(filters.me & ~filters.command("afk", prefixes=COMMAND_PREFIX))
-async def disable_afk_on_outgoing(client: Client, message: Message) -> None:
+@app.on_message(filters.command("del", prefixes=COMMAND_PREFIX) & AUTHORIZED_SENDER)
+async def delete_handler(client: Client, message: Message) -> None:
+    if not is_sudo_or_owner(message):
+        return
     try:
-        if not afk_status["is_afk"]:
+        if not message.reply_to_message:
+            await message.reply_text("❌ **Reply to a message with `.del` to delete it.**")
             return
 
-        afk_status["is_afk"] = False
-        afk_status["reason"] = ""
-        afk_status["start_time"] = None
-        afk_status["replied_to"] = set()
-        save_memory()
+        await message.reply_to_message.delete()
+        await message.delete()
     except Exception:
-        logger.exception("Failed to disable AFK on outgoing message")
+        logger.exception("Delete handler failed")
+        await message.reply_text("❌ **Delete command failed.**")
 
 
-@app.on_message(filters.incoming & filters.text & ~filters.command(["ping", "id", "userlink", "ask", "ai", "afk", "run", "del", "purge", "help", "addsudo", "rmsudo", "listsudo", "logs", "redeploy", "end"], prefixes=COMMAND_PREFIX) & ~filters.me)
-async def afk_auto_reply(client: Client, message: Message) -> None:
+@app.on_message(filters.command("purge", prefixes=COMMAND_PREFIX) & AUTHORIZED_SENDER)
+async def purge_handler(client: Client, message: Message) -> None:
+    if not is_sudo_or_owner(message):
+        return
     try:
-        cleanup_afk_memory()
-        
-        if not afk_status["is_afk"]:
+        if not message.reply_to_message:
+            await message.reply_text("❌ **Reply to the first message to purge from with `.purge`.**")
             return
-        if not message.from_user or message.from_user.is_self:
-            return
-        
-        is_private = message.chat.type in ("private", "bot")
-        is_mentioned = message.mentioned or (message.reply_to_message and message.reply_to_message.from_user and message.reply_to_message.from_user.is_self)
-        
-        if not (is_private or is_mentioned):
-            return
-        
-        sender_id = message.from_user.id
-        if sender_id in afk_status["replied_to"]:
-            return
-        if afk_status["start_time"]:
-            start_time = datetime.fromisoformat(afk_status["start_time"])
-        else:
-            start_time = datetime.now()
-        duration = datetime.now() - start_time
-        minutes = int(duration.total_seconds() / 60)
-        response = (
-            f"**🔴 I'm Currently AFK**\n\n"
-            f"📝 **Reason:** {afk_status['reason']}\n"
-            f"⏱️ **Away for:** {minutes} minutes\n\n"
-            f"💬 I'll reply when I'm back!"
-        )
+
+        start_id = message.reply_to_message.id
+        end_id = message.id
+        if start_id > end_id:
+            start_id, end_id = end_id, start_id
+
+        ids_to_delete = list(range(start_id, end_id + 1))
+        status = await message.reply_text(f"⏳ **Purging {len(ids_to_delete)} messages...**")
+
         try:
-            await message.reply_text(response)
-        except ChatWriteForbidden:
-            logger.warning("AFK reply blocked: write forbidden")
-            return
-        afk_status["replied_to"].add(sender_id)
-        save_memory()
+            await client.delete_messages(message.chat.id, ids_to_delete)
+            await status.edit_text(f"✅ **Purged {len(ids_to_delete)} messages**")
+        except Exception:
+            logger.exception("Failed to purge messages %s", ids_to_delete)
+            await status.edit_text("❌ **Failed to purge messages.**")
     except Exception:
-        logger.exception("AFK auto-reply failed")
+        logger.exception("Purge handler failed")
+        await message.reply_text("❌ **Purge command failed.**")
 
 
 @app.on_message(filters.command("help", prefixes=COMMAND_PREFIX) & AUTHORIZED_SENDER)
@@ -746,15 +890,17 @@ async def help_handler(client: Client, message: Message) -> None:
 • `.userlink` - Get user link 👤
 • `.help` - Show this help message 📖
 
-**AI Features (IMPROVED):**
+**AI Features**
 • `.ask <question>` - Ask AI with smart caching ⚡
 • `.ask` (reply) - Ask AI about replied message 💬
-• Smart features:
-  ✓ Response caching (instant replies for repeated questions)
-  ✓ Sentiment analysis (AI adapts tone)
-  ✓ Dynamic prompts (context-aware responses)
-  ✓ Smart temperature control (precise for code, creative for ideas)
-  ✓ Multi-model fallback (tries 4 models for best answer)
+
+**Utilities:**
+• `.run <code>` - Execute replied code or inline code in supported languages
+• `.run <language> <code>` - Choose language explicitly (python, js, bash, php, ruby, perl, lua)
+• `.run` (reply to file) - Execute supported file attachment
+• `.end` - Stop the currently running task
+• `.del` (reply) - Delete replied message and command message
+• `.purge` (reply) - Delete messages from replied message to this command
 
 **Sudo Management:**
 • `.addsudo <user_id>` - Add user to sudo list 🔑
@@ -762,28 +908,9 @@ async def help_handler(client: Client, message: Message) -> None:
 • `.rmsudo <user_id>` - Remove user from sudo list ❌
 • `.rmsudo` (reply) - Remove replied user from sudo list
 • `.listsudo` - List all sudo users 📋
-
-**AFK System:**
 • `.afk [reason]` - Set AFK status 🔴
-• AFK disables automatically when you send a message ✅
 
-**Example Usage:**
-```
-.ping
-.ask What is machine learning?
-.ask <reply to message>
-.afk Taking a break
-.addsudo 123456789
-```
-
-**🧠 New Features:**
-✨ Conversation memory with compression
-✨ Response caching (faster replies)
-✨ Sentiment-aware responses
-✨ Dynamic system prompts
-✨ Better error handling
-
-❓ **Need help?** Reply to any command with questions!"""
+"""
         await message.reply_text(help_text)
     except Exception:
         logger.exception("Help handler failed")
@@ -868,6 +995,81 @@ async def listsudo_handler(client: Client, message: Message) -> None:
             await message.reply_text(chunk)
     except Exception:
         logger.exception("Listsudo handler failed")
+
+
+
+@app.on_message(filters.command("afk", prefixes=COMMAND_PREFIX))
+async def afk_handler(client: Client, message: Message) -> None:
+    if not is_sudo_or_owner(message):
+        return
+    try:
+        reason = " ".join(message.command[1:]) if len(message.command) > 1 else "Away from keyboard"
+        afk_status["is_afk"] = True
+        afk_status["reason"] = reason
+        afk_status["start_time"] = datetime.now().isoformat()
+        afk_status["replied_to"] = set()
+        save_memory()
+        await message.reply_text(f"**🔴 AFK Activated**\n📝 **Reason:** {reason}")
+    except Exception:
+        logger.exception("AFK handler failed")
+        await message.reply_text("❌ **AFK command failed.**")
+
+
+@app.on_message(filters.me & ~filters.command("afk", prefixes=COMMAND_PREFIX))
+async def disable_afk_on_outgoing(client: Client, message: Message) -> None:
+    try:
+        if not afk_status["is_afk"]:
+            return
+
+        afk_status["is_afk"] = False
+        afk_status["reason"] = ""
+        afk_status["start_time"] = None
+        afk_status["replied_to"] = set()
+        save_memory()
+    except Exception:
+        logger.exception("Failed to disable AFK on outgoing message")
+
+
+@app.on_message(filters.incoming & filters.text & ~filters.command(["ping", "id", "userlink", "ask", "ai", "afk", "run", "del", "purge", "help", "addsudo", "rmsudo", "listsudo", "logs", "redeploy", "end"], prefixes=COMMAND_PREFIX) & ~filters.me)
+async def afk_auto_reply(client: Client, message: Message) -> None:
+    try:
+        cleanup_afk_memory()
+        
+        if not afk_status["is_afk"]:
+            return
+        if not message.from_user or message.from_user.is_self:
+            return
+        
+        is_private = message.chat.type in ("private", "bot")
+        is_mentioned = message.mentioned or (message.reply_to_message and message.reply_to_message.from_user and message.reply_to_message.from_user.is_self)
+        
+        if not (is_private or is_mentioned):
+            return
+        
+        sender_id = message.from_user.id
+        if sender_id in afk_status["replied_to"]:
+            return
+        if afk_status["start_time"]:
+            start_time = datetime.fromisoformat(afk_status["start_time"])
+        else:
+            start_time = datetime.now()
+        duration = datetime.now() - start_time
+        minutes = int(duration.total_seconds() / 60)
+        response = (
+            f"**🔴 I'm Currently AFK**\n\n"
+            f"📝 **Reason:** {afk_status['reason']}\n"
+            f"⏱️ **Away for:** {minutes} minutes\n\n"
+            f"💬 I'll reply when I'm back!"
+        )
+        try:
+            await message.reply_text(response)
+        except ChatWriteForbidden:
+            logger.warning("AFK reply blocked: write forbidden")
+            return
+        afk_status["replied_to"].add(sender_id)
+        save_memory()
+    except Exception:
+        logger.exception("AFK auto-reply failed")
 
 
 def main() -> None:
