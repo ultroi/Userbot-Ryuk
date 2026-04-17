@@ -379,7 +379,20 @@ async def search_web(query: str) -> str:
                 logger.error("DuckDuckGo search failed: %s", response.status_code)
                 return "❌ **Search failed.**"
 
-            data = response.json()
+            if not response.content:
+                logger.error("DuckDuckGo search returned empty content for query: %s", query)
+                return "❌ **Search failed.**"
+
+            try:
+                data = response.json()
+            except ValueError:
+                logger.error(
+                    "DuckDuckGo returned invalid JSON for query %s: %s",
+                    query,
+                    response.text[:500],
+                )
+                return "❌ **Search failed.**"
+
             results = []
             
             if data.get("Answer"):
