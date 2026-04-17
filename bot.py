@@ -1095,11 +1095,9 @@ async def afk_auto_reply(client: Client, message: Message) -> None:
 
 def main() -> None:
     load_memory()
-    logger.info("🚀 Userbot Starting (ENHANCED AI VERSION)...")
-    logger.info(f"📱 Session: {SESSION_NAME}")
-    logger.info(f"⚙️ Commands available with prefix: {COMMAND_PREFIX}")
-    logger.info(f"✨ Features: Sentiment Analysis, Response Caching, Dynamic Prompts, Context Awareness")
+    logger.info("🚀 Userbot Starting...")
     app.run()
+    logger.info("Started")
 
 
 if __name__ == "__main__":
